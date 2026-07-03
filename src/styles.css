@@ -124,33 +124,16 @@ button {
 .video-transform iframe,
 .video-transform > div,
 .videoTransformLayer iframe,
-.videoTransformLayer > div,
-.youtube-player-host,
-.youtube-player-host > div,
-.player-mount,
-.player-mount > iframe {
+.videoTransformLayer > div {
   width: 100%;
   height: 100%;
 }
 
 .video-transform iframe,
-.videoTransformLayer iframe,
-.player-mount iframe {
+.videoTransformLayer iframe {
   display: block;
   border: 0;
   background: #000;
-}
-
-.player-mount {
-  position: absolute;
-  inset: 0;
-  z-index: 1;
-  opacity: 0;
-  pointer-events: none;
-}
-
-.player-mount.is-ready {
-  opacity: 1;
 }
 
 .empty-state {
@@ -214,57 +197,40 @@ button {
   touch-action: none;
 }
 
-.time-overlay {
-  position: absolute;
-  right: 10px;
-  bottom: 18px;
-  left: 10px;
-  z-index: 3;
-  display: flex;
-  justify-content: space-between;
-  color: rgba(255, 255, 255, 0.88);
-  font-size: 0.78rem;
-  font-variant-numeric: tabular-nums;
-  font-weight: 900;
-  pointer-events: none;
-  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.8);
+.seek-strip {
+  flex-shrink: 0;
+  padding: 4px 8px 0;
+  background: rgba(8, 10, 9, 0.98);
+  touch-action: manipulation;
 }
 
-.seekbar {
-  position: absolute;
-  right: 10px;
-  bottom: 8px;
-  left: 10px;
-  z-index: 4;
+.seek-track {
+  position: relative;
   display: block;
-  height: 8px;
-  overflow: hidden;
+  width: 100%;
+  height: 18px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.24);
+  background: rgba(255, 255, 255, 0.16);
+  overflow: hidden;
   touch-action: none;
 }
 
-.seekbar-fill {
+.seek-fill {
   position: absolute;
   inset: 0 auto 0 0;
   border-radius: inherit;
   background: #f0c44f;
 }
 
-.marker {
+.seek-thumb {
   position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 4px;
-  transform: translateX(-2px);
-}
-
-.marker-a {
-  background: #63d6a7;
-}
-
-.marker-b {
-  background: #ff7d70;
+  top: 50%;
+  width: 16px;
+  height: 16px;
+  border: 2px solid #050607;
+  border-radius: 50%;
+  background: #f6f7f4;
+  transform: translate(-50%, -50%);
 }
 
 .bottom-bar {
@@ -272,7 +238,7 @@ button {
   z-index: 8;
   display: grid;
   flex-shrink: 0;
-  grid-template-columns: repeat(8, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 6px;
   padding: 8px 8px max(10px, env(safe-area-inset-bottom));
   background: rgba(8, 10, 9, 0.98);
@@ -323,12 +289,7 @@ button {
   color: #06140e;
 }
 
-.text-button {
-  font-size: 1.08rem;
-}
-
-.is-active,
-.has-point {
+.is-active {
   background: #f0c44f !important;
   color: #151107;
 }
@@ -360,21 +321,6 @@ button {
   font-weight: 900;
 }
 
-.loop-readout {
-  position: absolute;
-  left: 12px;
-  bottom: calc(68px + env(safe-area-inset-bottom));
-  z-index: 7;
-  display: flex;
-  gap: 8px;
-  color: rgba(255, 255, 255, 0.72);
-  font-size: 0.72rem;
-  font-variant-numeric: tabular-nums;
-  font-weight: 850;
-  pointer-events: none;
-  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.8);
-}
-
 @media (orientation: landscape) {
   .top-bar {
     grid-template-columns: minmax(0, 1fr) 72px;
@@ -396,13 +342,8 @@ button {
   }
 
   .icon-button,
-  .text-button,
   .play-button {
     height: 42px;
-  }
-
-  .loop-readout {
-    bottom: calc(54px + env(safe-area-inset-bottom));
   }
 }
 
@@ -414,7 +355,6 @@ button {
   }
 
   .icon-button,
-  .text-button,
   .play-button {
     height: 46px;
   }
