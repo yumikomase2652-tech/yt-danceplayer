@@ -29,6 +29,7 @@ declare global {
       events?: {
         onReady?: (event: PlayerEvent) => void;
         onStateChange?: (event: OnStateChangeEvent) => void;
+        onError?: (event: OnErrorEvent) => void;
       };
     }
 
@@ -37,6 +38,11 @@ declare global {
     }
 
     interface OnStateChangeEvent {
+      target: Player;
+      data: number;
+    }
+
+    interface OnErrorEvent {
       target: Player;
       data: number;
     }

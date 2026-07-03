@@ -4,6 +4,9 @@ import { FlipHorizontal2, Gauge, Pause, Play, ScanSearch, SkipBack, SkipForward,
 const STORAGE_KEY = "furi-practice-player-state";
 const SPEEDS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2];
 const DOUBLE_TAP_JUMP_SECONDS = 0.5;
+const YOUTUBE_API_SRC = "https://www.youtube.com/iframe_api";
+
+let youtubeApiPromise: Promise<typeof YT> | null = null;
 
 type SavedState = {
   url: string;
@@ -53,16 +56,18 @@ function extractVideoId(value: string) {
   try {
     const url = new URL(input);
     if (url.hostname.includes("youtu.be")) {
-      return url.pathname.split("/").filter(Boolean)[0] ?? "";
+      const id = url.pathname.split("/").filter(Boolean)[0] ?? "";
+      return /^[a-zA-Z0-9_-]{11}$/.test(id) ? id : "";
     }
 
     if (url.hostname.includes("youtube.com")) {
       const watchId = url.searchParams.get("v");
-      if (watchId) return watchId;
+      if (watchId && /^[a-zA-Z0-9_-]{11}$/.test(watchId)) return watchId;
 
       const parts = url.pathname.split("/").filter(Boolean);
       const videoIndex = parts.findIndex((part) => part === "embed" || part === "shorts");
-      if (videoIndex >= 0) return parts[videoIndex + 1] ?? "";
+      const id = videoIndex >= 0 ? (parts[videoIndex + 1] ?? "") : "";
+      return /^[a-zA-Z0-9_-]{11}$/.test(id) ? id : "";
     }
   } catch {
     return "";
@@ -82,20 +87,61 @@ function readSavedState(): SavedState {
 
 function loadYouTubeApi() {
   if (window.YT?.Player) return Promise.resolve(window.YT);
+  if (youtubeApiPromise) return youtubeApiPromise;
 
-  return new Promise<typeof YT>((resolve) => {
+  youtubeApiPromise = new Promise<typeof YT>((resolve, reject) => {
+    const timeoutId = window.setTimeout(() => {
+      reject(new Error("YouTube IFrame Player API の読み込みがタイムアウトしました。"));
+      youtubeApiPromise = null;
+    }, 12000);
+
     const previous = window.onYouTubeIframeAPIReady;
     window.onYouTubeIframeAPIReady = () => {
       previous?.();
-      resolve(window.YT!);
+      window.clearTimeout(timeoutId);
+      if (window.YT?.Player) {
+        console.log("YT API loaded");
+        resolve(window.YT);
+        return;
+      }
+      reject(new Error("YouTube IFrame Player API は読み込まれましたが、window.YT が undefined です。"));
+      youtubeApiPromise = null;
     };
 
-    if (!document.querySelector('script[src="https://www.youtube.com/iframe_api"]')) {
+    const existingScript = document.querySelector<HTMLScriptElement>(`script[src="${YOUTUBE_API_SRC}"]`);
+    if (existingScript) {
+      existingScript.addEventListener("error", () => {
+        window.clearTimeout(timeoutId);
+        youtubeApiPromise = null;
+        reject(new Error("YouTube IFrame Player API script の読み込みに失敗しました。"));
+      });
+      return;
+    }
+
+    if (!document.querySelector(`script[src="${YOUTUBE_API_SRC}"]`)) {
       const script = document.createElement("script");
-      script.src = "https://www.youtube.com/iframe_api";
+      script.src = YOUTUBE_API_SRC;
+      script.async = true;
+      script.onerror = () => {
+        window.clearTimeout(timeoutId);
+        youtubeApiPromise = null;
+        reject(new Error("YouTube IFrame Player API script の読み込みに失敗しました。"));
+      };
       document.head.appendChild(script);
     }
   });
+
+  return youtubeApiPromise;
+}
+
+function playerErrorMessage(code: number) {
+  if (code === 2) return "動画IDが正しくない可能性があります。URLを確認してください。";
+  if (code === 5) return "この動画は現在のブラウザ環境では再生できない形式の可能性があります。";
+  if (code === 100) return "動画が見つかりません。削除済み、非公開、またはURLが違う可能性があります。";
+  if (code === 101 || code === 150) {
+    return "この動画は外部サイトでの再生が許可されていない可能性があります。YouTubeで直接開いて確認してください。";
+  }
+  return `YouTube動画の読み込みに失敗しました。エラーコード: ${code}`;
 }
 
 export function App() {
@@ -114,6 +160,8 @@ export function App() {
   const [notice, setNotice] = useState("");
 
   const playerRef = useRef<YT.Player | null>(null);
+  const latestVideoIdRef = useRef(videoId);
+  const latestSpeedRef = useRef(speed);
   const touchRef = useRef<TouchSnapshot | null>(null);
   const dragStartedRef = useRef(false);
   const tapTimerRef = useRef<number | null>(null);
@@ -125,43 +173,74 @@ export function App() {
   const progress = duration > 0 ? clamp((currentTime / duration) * 100, 0, 100) : 0;
 
   useEffect(() => {
+    latestVideoIdRef.current = videoId;
+  }, [videoId]);
+
+  useEffect(() => {
+    latestSpeedRef.current = speed;
+  }, [speed]);
+
+  useEffect(() => {
     const nextState: SavedState = { url, videoId, mirrored, scale, speed, pointA, pointB };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(nextState));
   }, [url, videoId, mirrored, scale, speed, pointA, pointB]);
+
+  const createPlayer = useCallback((initialVideoId: string) => {
+    if (playerRef.current || !window.YT?.Player) return playerRef.current;
+
+    playerRef.current = new YT.Player(playerElementId, {
+      width: "100%",
+      height: "100%",
+      videoId: initialVideoId || undefined,
+      playerVars: {
+        playsinline: 1,
+        rel: 0,
+        modestbranding: 1,
+        controls: 0,
+        disablekb: 1,
+        origin: window.location.origin
+      },
+      events: {
+        onReady: (event) => {
+          console.log("player ready");
+          event.target.setPlaybackRate(latestSpeedRef.current);
+          setDuration(event.target.getDuration() || 0);
+          setNotice("");
+
+          const pendingVideoId = latestVideoIdRef.current;
+          if (pendingVideoId && pendingVideoId !== initialVideoId) {
+            event.target.loadVideoById(pendingVideoId);
+          }
+        },
+        onStateChange: (event) => {
+          setIsPlaying(event.data === YT.PlayerState.PLAYING);
+        },
+        onError: (event) => {
+          console.log("player error code", event.data);
+          setNotice(playerErrorMessage(event.data));
+        }
+      }
+    });
+
+    return playerRef.current;
+  }, []);
 
   useEffect(() => {
     let disposed = false;
 
     loadYouTubeApi().then(() => {
       if (disposed || playerRef.current) return;
-
-      playerRef.current = new YT.Player(playerElementId, {
-        width: "100%",
-        height: "100%",
-        videoId: videoId || undefined,
-        playerVars: {
-          playsinline: 1,
-          rel: 0,
-          modestbranding: 1,
-          controls: 0,
-          disablekb: 1
-        },
-        events: {
-          onReady: (event) => {
-            event.target.setPlaybackRate(speed);
-            setDuration(event.target.getDuration() || 0);
-          },
-          onStateChange: (event) => {
-            setIsPlaying(event.data === YT.PlayerState.PLAYING);
-          }
-        }
-      });
+      createPlayer(latestVideoIdRef.current);
+    }).catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : "YouTube IFrame Player API の読み込みに失敗しました。";
+      console.log("YT API load error", message);
+      setNotice(message);
     });
 
     return () => {
       disposed = true;
     };
-  }, []);
+  }, [createPlayer]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -224,20 +303,32 @@ export function App() {
     player.playVideo();
   }, [currentTime, isPlaying, pointA, pointB, validLoop, videoId]);
 
-  const loadVideo = useCallback(() => {
+  const loadVideo = useCallback(async () => {
     const nextId = extractVideoId(url);
+    console.log("extracted videoId", nextId);
+
     if (!nextId) {
       setNotice("YouTube URL または動画 ID を入力してください。");
       return;
     }
 
-    setNotice("");
     setVideoId(nextId);
     setCurrentTime(0);
     setDuration(0);
-    playerRef.current?.loadVideoById(nextId);
-    playerRef.current?.setPlaybackRate(speed);
-  }, [speed, url]);
+    setNotice("YouTube Player を読み込んでいます...");
+
+    try {
+      await loadYouTubeApi();
+      const player = playerRef.current ?? createPlayer(nextId);
+      player?.loadVideoById(nextId);
+      player?.setPlaybackRate(latestSpeedRef.current);
+      setNotice("");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "YouTube IFrame Player API の読み込みに失敗しました。";
+      console.log("YT API load error", message);
+      setNotice(message);
+    }
+  }, [createPlayer, url]);
 
   const setLoopPoint = (side: "A" | "B") => {
     const time = playerRef.current?.getCurrentTime() ?? currentTime;
@@ -407,6 +498,9 @@ export function App() {
           onClick={onStageClick}
           onDoubleClick={(event) => {
             if (!videoId) return;
+            if (tapTimerRef.current) window.clearTimeout(tapTimerRef.current);
+            tapTimerRef.current = null;
+            lastTapRef.current = null;
             const rect = event.currentTarget.getBoundingClientRect();
             jump(event.clientX - rect.left < rect.width / 2 ? -DOUBLE_TAP_JUMP_SECONDS : DOUBLE_TAP_JUMP_SECONDS);
           }}
