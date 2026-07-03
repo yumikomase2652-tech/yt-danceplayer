@@ -84,17 +84,6 @@ function readSavedState(): SavedState {
   }
 }
 
-function buildEmbedUrl(videoId: string) {
-  const params = new URLSearchParams({
-    playsinline: "1",
-    rel: "0",
-    modestbranding: "1",
-    controls: "0"
-  });
-
-  return `https://www.youtube.com/embed/${videoId}?${params.toString()}`;
-}
-
 function loadYouTubeApi() {
   if (window.YT?.Player) return Promise.resolve(window.YT);
   if (youtubeApiPromise) return youtubeApiPromise;
@@ -102,7 +91,7 @@ function loadYouTubeApi() {
   youtubeApiPromise = new Promise<typeof YT>((resolve, reject) => {
     const timeoutId = window.setTimeout(() => {
       youtubeApiPromise = null;
-      reject(new Error("YouTube Player API の読み込みに失敗しました。通常の動画表示に切り替えます。"));
+      reject(new Error("YouTube Player API の読み込みに失敗しました。"));
     }, 10000);
 
     window.onYouTubeIframeAPIReady = () => {
@@ -113,7 +102,7 @@ function loadYouTubeApi() {
         return;
       }
       youtubeApiPromise = null;
-      reject(new Error("YouTube Player API の準備に失敗しました。通常の動画表示に切り替えます。"));
+      reject(new Error("YouTube Player API の準備に失敗しました。"));
     };
 
     const existingScript = document.querySelector<HTMLScriptElement>(`script[src="${YOUTUBE_API_SRC}"]`);
@@ -125,7 +114,7 @@ function loadYouTubeApi() {
     script.onerror = () => {
       window.clearTimeout(timeoutId);
       youtubeApiPromise = null;
-      reject(new Error("YouTube Player API script の読み込みに失敗しました。通常の動画表示に切り替えます。"));
+      reject(new Error("YouTube Player API script の読み込みに失敗しました。"));
     };
     document.head.appendChild(script);
   });
@@ -148,7 +137,7 @@ function isPlayerReady(player: YT.Player | null): player is YT.Player {
 function playerErrorMessage(code: number) {
   if (code === 101 || code === 150) return "この動画は外部サイトでの再生が許可されていない可能性があります。";
   if (code === 100) return "動画が見つかりません。削除済み、非公開、またはURLが違う可能性があります。";
-  return `YouTube Player API でエラーが発生しました。通常の動画表示に切り替えます。コード: ${code}`;
+  return `YouTube Player API でエラーが発生しました。コード: ${code}`;
 }
 
 export function App() {
@@ -164,7 +153,6 @@ export function App() {
   const [duration, setDuration] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [playerReady, setPlayerReady] = useState(false);
-  const [apiFailed, setApiFailed] = useState(false);
   const [speedMenuOpen, setSpeedMenuOpen] = useState(false);
   const [statusMessage, setStatusMessage] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
@@ -174,10 +162,9 @@ export function App() {
   const touchRef = useRef<TouchSnapshot | null>(null);
   const creatingPlayerRef = useRef(false);
   const latestSpeedRef = useRef(speed);
+  const latestVideoIdRef = useRef(videoId);
 
-  const embedUrl = videoId ? buildEmbedUrl(videoId) : "";
-  const fallbackVisible = Boolean(videoId && (!playerReady || apiFailed));
-  const controlsDisabled = !playerReady || !isPlayerReady(playerRef.current);
+  const controlsDisabled = true;
 
   useEffect(() => {
     const nextState: SavedState = { url, videoId, mirrored, scale, speed, pointA, pointB };
@@ -187,6 +174,10 @@ export function App() {
   useEffect(() => {
     latestSpeedRef.current = speed;
   }, [speed]);
+
+  useEffect(() => {
+    latestVideoIdRef.current = videoId;
+  }, [videoId]);
 
   const createPlayer = useCallback(async (nextVideoId: string) => {
     if (!playerMountRef.current || creatingPlayerRef.current || isPlayerReady(playerRef.current)) return;
@@ -217,11 +208,13 @@ export function App() {
             console.log("player ready");
             playerRef.current = event.target;
             setPlayerReady(true);
-            setApiFailed(false);
             setStatusMessage("");
             setErrorMessage("");
             event.target.setPlaybackRate(latestSpeedRef.current);
-            event.target.loadVideoById(nextVideoId);
+            const readyVideoId = latestVideoIdRef.current || nextVideoId;
+            if (readyVideoId && typeof event.target.loadVideoById === "function") {
+              event.target.loadVideoById(readyVideoId);
+            }
           },
           onStateChange: (event) => {
             setIsPlaying(event.data === YT.PlayerState.PLAYING);
@@ -229,17 +222,16 @@ export function App() {
           onError: (event) => {
             console.log("player error code", event.data);
             setPlayerReady(false);
-            setApiFailed(true);
             setStatusMessage("");
             setErrorMessage(playerErrorMessage(event.data));
           }
         }
       });
     } catch (error) {
-      console.log("YT API fallback", error);
+      console.log("YT API error", error);
       setPlayerReady(false);
-      setApiFailed(true);
       setStatusMessage("");
+      setErrorMessage(error instanceof Error ? error.message : "YouTube Player API の初期化に失敗しました。");
     } finally {
       creatingPlayerRef.current = false;
     }
@@ -252,7 +244,6 @@ export function App() {
     if (isPlayerReady(player) && playerReady) {
       player.loadVideoById(videoId);
       player.setPlaybackRate(latestSpeedRef.current);
-      setApiFailed(false);
       return;
     }
 
@@ -286,12 +277,11 @@ export function App() {
     setDuration(0);
     setStatusMessage("動画を読み込んでいます...");
     setErrorMessage("");
-    setApiFailed(false);
   };
 
   const requireReady = () => {
     if (!controlsDisabled) return true;
-    setStatusMessage("操作機能を準備中です。動画表示はそのまま使えます。");
+    setStatusMessage("第1段階では動画表示を優先しています。操作機能は次の段階で戻します。");
     return false;
   };
 
@@ -388,24 +378,7 @@ export function App() {
               transform: `scale(${scale}) ${mirrored ? "scaleX(-1)" : ""}`
             }}
           >
-            {fallbackVisible && (
-              <iframe
-                className="fallback-iframe"
-                title="YouTube fallback video player"
-                src={embedUrl}
-                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                allowFullScreen={false}
-                referrerPolicy="strict-origin-when-cross-origin"
-                onLoad={() => {
-                  if (!playerReady) setStatusMessage("");
-                  console.log("fallback iframe loaded", embedUrl);
-                }}
-                onError={() => {
-                  setErrorMessage("動画の埋め込み再生が許可されていない可能性があります。YouTubeで直接確認してください。");
-                }}
-              />
-            )}
-            <div className={`player-mount ${playerReady && !apiFailed ? "is-ready" : ""}`} ref={playerMountRef} />
+            <div className={`player-mount ${playerReady ? "is-ready" : ""}`} ref={playerMountRef} />
           </div>
 
           {playerReady && (
@@ -446,6 +419,7 @@ export function App() {
           className={`icon-button ${mirrored ? "is-active" : ""}`}
           type="button"
           onClick={() => setMirrored((value) => !value)}
+          disabled={controlsDisabled}
           aria-label="左右反転"
         >
           <FlipHorizontal2 />
@@ -456,6 +430,7 @@ export function App() {
             className={`icon-button ${speedMenuOpen ? "is-active" : ""}`}
             type="button"
             onClick={() => setSpeedMenuOpen((value) => !value)}
+            disabled={controlsDisabled}
             aria-label="速度"
           >
             <Gauge />
@@ -471,10 +446,22 @@ export function App() {
             </div>
           )}
         </div>
-        <button className={`text-button ${pointA !== null ? "has-point" : ""}`} type="button" onClick={() => setPointA(currentTime)} aria-label="A点">
+        <button
+          className={`text-button ${pointA !== null ? "has-point" : ""}`}
+          type="button"
+          onClick={() => setPointA(currentTime)}
+          disabled={controlsDisabled}
+          aria-label="A点"
+        >
           A
         </button>
-        <button className={`text-button ${pointB !== null ? "has-point" : ""}`} type="button" onClick={() => setPointB(currentTime)} aria-label="B点">
+        <button
+          className={`text-button ${pointB !== null ? "has-point" : ""}`}
+          type="button"
+          onClick={() => setPointB(currentTime)}
+          disabled={controlsDisabled}
+          aria-label="B点"
+        >
           B
         </button>
         <button
@@ -484,6 +471,7 @@ export function App() {
             setPointA(null);
             setPointB(null);
           }}
+          disabled={controlsDisabled}
           aria-label="A-B解除"
         >
           <X />
