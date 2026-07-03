@@ -4,6 +4,8 @@ import { FlipHorizontal2, Gauge, Pause, Play, ScanSearch, SkipBack, SkipForward 
 const STORAGE_KEY = "d-player-state";
 const SPEEDS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2];
 const SHOW_YOUTUBE_CONTROLS = false;
+const PREFERRED_QUALITY = "hd1080";
+const EXPERIMENTAL_QUALITY = "highres";
 const APPROX_DURATION_SECONDS = 180;
 
 type SavedState = {
@@ -79,9 +81,12 @@ function buildEmbedUrl(videoId: string) {
     rel: "0",
     modestbranding: "1",
     controls: SHOW_YOUTUBE_CONTROLS ? "1" : "0",
+    autoplay: "0",
     iv_load_policy: "3",
+    cc_load_policy: "0",
     fs: "0",
     disablekb: "1",
+    vq: PREFERRED_QUALITY,
     origin: window.location.origin
   });
 
@@ -101,10 +106,12 @@ export function App() {
   const [errorMessage, setErrorMessage] = useState("");
   const [seekPercent, setSeekPercent] = useState(0);
   const [dragDelta, setDragDelta] = useState<number | null>(null);
+  const [seekToast, setSeekToast] = useState("");
 
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const touchRef = useRef<TouchSnapshot | null>(null);
   const currentTimeRef = useRef(0);
+  const seekToastTimerRef = useRef<number | null>(null);
 
   const embedUrl = videoId ? buildEmbedUrl(videoId) : "";
 
@@ -135,6 +142,12 @@ export function App() {
     return () => window.clearTimeout(timer);
   }, [loading, videoId]);
 
+  useEffect(() => {
+    return () => {
+      if (seekToastTimerRef.current) window.clearTimeout(seekToastTimerRef.current);
+    };
+  }, []);
+
   const postToPlayer = (func: string, args: unknown[] = []) => {
     iframeRef.current?.contentWindow?.postMessage(
       JSON.stringify({
@@ -150,6 +163,34 @@ export function App() {
   const pauseVideo = () => postToPlayer("pauseVideo");
   const seekTo = (seconds: number) => postToPlayer("seekTo", [Math.max(0, seconds), true]);
   const setPlaybackRate = (rate: number) => postToPlayer("setPlaybackRate", [rate]);
+  const setPlaybackQuality = (quality: string) => postToPlayer("setPlaybackQuality", [quality]);
+  const setPlaybackQualityRange = (quality: string) => postToPlayer("setPlaybackQualityRange", [quality, quality]);
+  const unloadCaptions = () => postToPlayer("unloadModule", ["captions"]);
+
+  const applyPlaybackPreferences = () => {
+    setPlaybackRate(speed);
+    unloadCaptions();
+    // postMessageの画質指定はYouTube側で無視される場合があります。iframe src の vq も併用します。
+    setPlaybackQuality(EXPERIMENTAL_QUALITY);
+    setPlaybackQualityRange(EXPERIMENTAL_QUALITY);
+    window.setTimeout(() => {
+      setPlaybackQuality(PREFERRED_QUALITY);
+      setPlaybackQualityRange(PREFERRED_QUALITY);
+    }, 300);
+  };
+
+  const formatClock = (seconds: number) => {
+    const safeSeconds = Math.max(0, seconds);
+    const minutes = Math.floor(safeSeconds / 60);
+    const rest = Math.floor(safeSeconds % 60);
+    return `${String(minutes).padStart(2, "0")}:${String(rest).padStart(2, "0")}`;
+  };
+
+  const showSeekToast = (delta: number, targetTime: number) => {
+    setSeekToast(`${delta >= 0 ? "+" : ""}${delta.toFixed(1)}s -> ${formatClock(targetTime)}`);
+    if (seekToastTimerRef.current) window.clearTimeout(seekToastTimerRef.current);
+    seekToastTimerRef.current = window.setTimeout(() => setSeekToast(""), 1000);
+  };
 
   const loadVideo = () => {
     const nextId = extractVideoId(url);
@@ -184,6 +225,7 @@ export function App() {
     currentTimeRef.current = nextTime;
     setSeekPercent(nextPercent);
     seekTo(nextTime);
+    showSeekToast(seconds, nextTime);
   };
 
   const changeSpeed = (nextSpeed: number) => {
@@ -198,6 +240,7 @@ export function App() {
     currentTimeRef.current = nextTime;
     setSeekPercent(nextPercent);
     seekTo(nextTime);
+    showSeekToast(0, nextTime);
   };
 
   const touchDistance = (touches: React.TouchList) => {
@@ -259,6 +302,7 @@ export function App() {
       currentTimeRef.current = nextTime;
       setSeekPercent(clamp(nextTime / APPROX_DURATION_SECONDS, 0, 1));
       seekTo(nextTime);
+      showSeekToast(dragDelta, nextTime);
     }
     touchRef.current = null;
     setDragDelta(null);
@@ -301,7 +345,7 @@ export function App() {
                 onLoad={() => {
                   setLoading(false);
                   setErrorMessage("");
-                  setPlaybackRate(speed);
+                  applyPlaybackPreferences();
                   console.log("iframe loaded", embedUrl);
                 }}
               />
@@ -317,7 +361,13 @@ export function App() {
 
           {loading && <p className="status-message">動画を読み込んでいます...</p>}
           {errorMessage && <p className="notice">{errorMessage}</p>}
-          {dragDelta !== null && <p className="drag-delta">{dragDelta >= 0 ? "+" : ""}{dragDelta.toFixed(1)}s</p>}
+          {(dragDelta !== null || seekToast) && (
+            <p className="drag-delta">
+              {dragDelta !== null
+                ? `${dragDelta >= 0 ? "+" : ""}${dragDelta.toFixed(1)}s -> ${formatClock(Math.max(0, (touchRef.current?.startTime ?? currentTimeRef.current) + dragDelta))}`
+                : seekToast}
+            </p>
+          )}
           {videoId && (
             <div
               className="gesture-layer is-enabled"
