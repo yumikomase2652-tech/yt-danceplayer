@@ -15,6 +15,9 @@ declare global {
       pauseVideo(): void;
       seekTo(seconds: number, allowSeekAhead: boolean): void;
       setPlaybackRate(suggestedRate: number): void;
+      setPlaybackQuality(suggestedQuality: string): void;
+      getPlaybackQuality(): string;
+      getAvailableQualityLevels(): string[];
       getPlayerState(): number;
       getCurrentTime(): number;
       getDuration(): number;

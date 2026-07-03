@@ -5,6 +5,7 @@ const STORAGE_KEY = "furi-practice-player-state";
 const SPEEDS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2];
 const DOUBLE_TAP_JUMP_SECONDS = 0.5;
 const YOUTUBE_API_SRC = "https://www.youtube.com/iframe_api";
+const QUALITY_PRIORITY = ["highres", "hd2160", "hd1440", "hd1080", "hd720"];
 
 let youtubeApiPromise: Promise<typeof YT> | null = null;
 
@@ -144,6 +145,49 @@ function playerErrorMessage(code: number) {
   return `YouTube動画の読み込みに失敗しました。エラーコード: ${code}`;
 }
 
+function selectBestQuality(availableLevels: string[]) {
+  return QUALITY_PRIORITY.find((quality) => availableLevels.includes(quality)) ?? availableLevels[0] ?? "hd1080";
+}
+
+function applyBestPlaybackQuality(player: YT.Player) {
+  if (
+    typeof player.setPlaybackQuality !== "function" ||
+    typeof player.getAvailableQualityLevels !== "function" ||
+    typeof player.getPlaybackQuality !== "function"
+  ) {
+    console.log("playback quality API unavailable", player);
+    return;
+  }
+
+  const availableLevels = player.getAvailableQualityLevels?.() ?? [];
+  const selectedQuality = selectBestQuality(availableLevels);
+
+  for (const quality of QUALITY_PRIORITY) {
+    player.setPlaybackQuality(quality);
+  }
+  player.setPlaybackQuality(selectedQuality);
+
+  window.setTimeout(() => {
+    console.log("available quality levels", player.getAvailableQualityLevels?.() ?? []);
+    console.log("selected playback quality", selectedQuality);
+    console.log("actual playback quality", player.getPlaybackQuality?.() ?? "unknown");
+  }, 500);
+}
+
+function isYouTubePlayer(value: unknown): value is YT.Player {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as YT.Player).loadVideoById === "function" &&
+    typeof (value as YT.Player).destroy === "function"
+  );
+}
+
+function getSafeCurrentTime(player: YT.Player | null, fallback: number) {
+  if (!isYouTubePlayer(player) || typeof player.getCurrentTime !== "function") return fallback;
+  return player.getCurrentTime() ?? fallback;
+}
+
 export function App() {
   const saved = useMemo(readSavedState, []);
   const [url, setUrl] = useState(saved.url);
@@ -159,7 +203,13 @@ export function App() {
   const [speedMenuOpen, setSpeedMenuOpen] = useState(false);
   const [notice, setNotice] = useState("");
 
+  const playerHostRef = useRef<HTMLDivElement | null>(null);
+  const playerMountRef = useRef<HTMLDivElement | null>(null);
   const playerRef = useRef<YT.Player | null>(null);
+  const pendingVideoIdRef = useRef(videoId);
+  const playerReadyRef = useRef(false);
+  const creatingPlayerRef = useRef(false);
+  const playerGenerationRef = useRef(0);
   const latestVideoIdRef = useRef(videoId);
   const latestSpeedRef = useRef(speed);
   const touchRef = useRef<TouchSnapshot | null>(null);
@@ -174,6 +224,7 @@ export function App() {
 
   useEffect(() => {
     latestVideoIdRef.current = videoId;
+    pendingVideoIdRef.current = videoId;
   }, [videoId]);
 
   useEffect(() => {
@@ -185,45 +236,104 @@ export function App() {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(nextState));
   }, [url, videoId, mirrored, scale, speed, pointA, pointB]);
 
-  const createPlayer = useCallback((initialVideoId: string) => {
-    if (playerRef.current || !window.YT?.Player) return playerRef.current;
+  const destroyPlayer = useCallback(() => {
+    const existingPlayer = playerRef.current;
+    if (existingPlayer && typeof existingPlayer.destroy === "function") {
+      existingPlayer.destroy();
+    }
+    playerRef.current = null;
+    playerReadyRef.current = false;
+    creatingPlayerRef.current = false;
+    playerGenerationRef.current += 1;
+    playerMountRef.current = null;
 
-    playerRef.current = new YT.Player(playerElementId, {
+    if (playerHostRef.current) {
+      playerHostRef.current.replaceChildren();
+    }
+  }, []);
+
+  const safeLoadVideo = useCallback((nextVideoId: string) => {
+    const player = playerRef.current;
+    console.log("playerRef.current", player);
+    console.log("typeof loadVideoById", typeof player?.loadVideoById);
+
+    if (!isYouTubePlayer(player) || !playerReadyRef.current || typeof player.loadVideoById !== "function") {
+      pendingVideoIdRef.current = nextVideoId;
+      setNotice("動画プレーヤーの準備中です。もう一度読み込んでください。");
+      return false;
+    }
+
+    player.loadVideoById(nextVideoId);
+    window.setTimeout(() => applyBestPlaybackQuality(player), 900);
+    return true;
+  }, []);
+
+  const createPlayer = useCallback((initialVideoId: string) => {
+    if (!window.YT?.Player || !playerHostRef.current || creatingPlayerRef.current) return playerRef.current;
+    if (isYouTubePlayer(playerRef.current)) return playerRef.current;
+
+    destroyPlayer();
+    creatingPlayerRef.current = true;
+    pendingVideoIdRef.current = initialVideoId;
+    const generation = playerGenerationRef.current;
+
+    const mount = document.createElement("div");
+    mount.id = playerElementId;
+    playerHostRef.current.appendChild(mount);
+    playerMountRef.current = mount;
+
+    const player = new YT.Player(mount, {
       width: "100%",
       height: "100%",
-      videoId: initialVideoId || undefined,
+      videoId: undefined,
       playerVars: {
         playsinline: 1,
         rel: 0,
         modestbranding: 1,
         controls: 0,
+        fs: 0,
+        iv_load_policy: 3,
         disablekb: 1,
+        vq: "hd1080",
         origin: window.location.origin
       },
       events: {
         onReady: (event) => {
+          if (generation !== playerGenerationRef.current) return;
           console.log("player ready");
+          playerRef.current = event.target;
+          playerReadyRef.current = true;
+          creatingPlayerRef.current = false;
+          console.log("playerRef.current", playerRef.current);
+          console.log("typeof loadVideoById", typeof playerRef.current?.loadVideoById);
           event.target.setPlaybackRate(latestSpeedRef.current);
+          applyBestPlaybackQuality(event.target);
           setDuration(event.target.getDuration() || 0);
           setNotice("");
 
-          const pendingVideoId = latestVideoIdRef.current;
-          if (pendingVideoId && pendingVideoId !== initialVideoId) {
+          const pendingVideoId = pendingVideoIdRef.current || latestVideoIdRef.current;
+          if (pendingVideoId && typeof event.target.loadVideoById === "function") {
             event.target.loadVideoById(pendingVideoId);
+            window.setTimeout(() => applyBestPlaybackQuality(event.target), 900);
           }
         },
         onStateChange: (event) => {
+          if (generation !== playerGenerationRef.current) return;
           setIsPlaying(event.data === YT.PlayerState.PLAYING);
         },
         onError: (event) => {
+          if (generation !== playerGenerationRef.current) return;
           console.log("player error code", event.data);
           setNotice(playerErrorMessage(event.data));
         }
       }
     });
 
+    playerRef.current = player;
+    console.log("playerRef.current", playerRef.current);
+    console.log("typeof loadVideoById", typeof playerRef.current?.loadVideoById);
     return playerRef.current;
-  }, []);
+  }, [destroyPlayer]);
 
   useEffect(() => {
     let disposed = false;
@@ -239,13 +349,20 @@ export function App() {
 
     return () => {
       disposed = true;
+      destroyPlayer();
     };
-  }, [createPlayer]);
+  }, [createPlayer, destroyPlayer]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
       const player = playerRef.current;
-      if (!player) return;
+      if (
+        !isYouTubePlayer(player) ||
+        typeof player.getCurrentTime !== "function" ||
+        typeof player.getDuration !== "function"
+      ) {
+        return;
+      }
 
       const time = player.getCurrentTime() || 0;
       const length = player.getDuration() || 0;
@@ -253,8 +370,8 @@ export function App() {
       setDuration(length);
 
       if (validLoop && pointA !== null && pointB !== null && time >= pointB) {
-        player.seekTo(pointA, true);
-        player.playVideo();
+        if (typeof player.seekTo === "function") player.seekTo(pointA, true);
+        if (typeof player.playVideo === "function") player.playVideo();
       }
     }, 80);
 
@@ -262,7 +379,10 @@ export function App() {
   }, [pointA, pointB, validLoop]);
 
   useEffect(() => {
-    playerRef.current?.setPlaybackRate(speed);
+    const player = playerRef.current;
+    if (isYouTubePlayer(player) && typeof player.setPlaybackRate === "function") {
+      player.setPlaybackRate(speed);
+    }
   }, [speed]);
 
   useEffect(() => {
@@ -275,7 +395,10 @@ export function App() {
   const seekTo = useCallback(
     (seconds: number) => {
       const safeTime = clamp(seconds, 0, duration || Number.MAX_SAFE_INTEGER);
-      playerRef.current?.seekTo(safeTime, true);
+      const player = playerRef.current;
+      if (isYouTubePlayer(player) && typeof player.seekTo === "function" && playerReadyRef.current) {
+        player.seekTo(safeTime, true);
+      }
       setCurrentTime(safeTime);
     },
     [duration]
@@ -283,24 +406,27 @@ export function App() {
 
   const jump = useCallback(
     (delta: number) => {
-      seekTo((playerRef.current?.getCurrentTime() ?? currentTime) + delta);
+      seekTo(getSafeCurrentTime(playerRef.current, currentTime) + delta);
     },
     [currentTime, seekTo]
   );
 
   const togglePlay = useCallback(() => {
     const player = playerRef.current;
-    if (!player || !videoId) return;
+    if (!isYouTubePlayer(player) || !playerReadyRef.current || !videoId) {
+      setNotice("動画プレーヤーの準備中です。もう一度読み込んでください。");
+      return;
+    }
 
     if (isPlaying) {
-      player.pauseVideo();
+      if (typeof player.pauseVideo === "function") player.pauseVideo();
       return;
     }
 
     if (validLoop && pointA !== null && currentTime >= (pointB ?? Infinity)) {
-      player.seekTo(pointA, true);
+      if (typeof player.seekTo === "function") player.seekTo(pointA, true);
     }
-    player.playVideo();
+    if (typeof player.playVideo === "function") player.playVideo();
   }, [currentTime, isPlaying, pointA, pointB, validLoop, videoId]);
 
   const loadVideo = useCallback(async () => {
@@ -319,19 +445,20 @@ export function App() {
 
     try {
       await loadYouTubeApi();
-      const player = playerRef.current ?? createPlayer(nextId);
-      player?.loadVideoById(nextId);
-      player?.setPlaybackRate(latestSpeedRef.current);
-      setNotice("");
+      const player = isYouTubePlayer(playerRef.current) ? playerRef.current : createPlayer(nextId);
+      if (isYouTubePlayer(player) && typeof player.setPlaybackRate === "function") {
+        player.setPlaybackRate(latestSpeedRef.current);
+      }
+      safeLoadVideo(nextId);
     } catch (error) {
       const message = error instanceof Error ? error.message : "YouTube IFrame Player API の読み込みに失敗しました。";
       console.log("YT API load error", message);
       setNotice(message);
     }
-  }, [createPlayer, url]);
+  }, [createPlayer, safeLoadVideo, url]);
 
   const setLoopPoint = (side: "A" | "B") => {
-    const time = playerRef.current?.getCurrentTime() ?? currentTime;
+    const time = getSafeCurrentTime(playerRef.current, currentTime);
     if (side === "A") {
       setPointA(time);
       if (pointB !== null && pointB <= time) setPointB(null);
@@ -408,7 +535,7 @@ export function App() {
     touchRef.current = {
       x: touch.clientX,
       y: touch.clientY,
-      time: playerRef.current?.getCurrentTime() ?? currentTime
+      time: getSafeCurrentTime(playerRef.current, currentTime)
     };
     dragStartedRef.current = false;
   };
@@ -514,7 +641,7 @@ export function App() {
               transform: `scale(${scale}) ${mirrored ? "scaleX(-1)" : ""}`
             }}
           >
-            <div id={playerElementId} />
+            <div ref={playerHostRef} className="youtube-player-host" />
           </div>
 
           {!videoId && (
@@ -526,43 +653,7 @@ export function App() {
 
           {notice && <p className="notice">{notice}</p>}
 
-          <div className="gesture-zones" aria-hidden="true">
-            <span>大きく</span>
-            <span>ふつう</span>
-            <span>細かく</span>
-          </div>
-
-          <div className="time-overlay">
-            <span>{formatTime(currentTime)}</span>
-            <span>{formatTime(duration)}</span>
-          </div>
-
-          <button
-            className="seekbar"
-            type="button"
-            aria-label="シークバー"
-            onClick={(event) => {
-              event.stopPropagation();
-              handleSeekBar(event.clientX, event.currentTarget.getBoundingClientRect());
-            }}
-            onPointerMove={(event) => {
-              if (event.buttons === 1) handleSeekBar(event.clientX, event.currentTarget.getBoundingClientRect());
-            }}
-            onTouchStart={(event) => event.stopPropagation()}
-            onTouchMove={(event) => {
-              event.stopPropagation();
-              handleSeekBar(event.touches[0].clientX, event.currentTarget.getBoundingClientRect());
-            }}
-            onTouchEnd={(event) => event.stopPropagation()}
-          >
-            <span className="seekbar-fill" style={{ width: `${progress}%` }} />
-            {pointA !== null && duration > 0 && (
-              <span className="marker marker-a" style={{ left: `${(pointA / duration) * 100}%` }} />
-            )}
-            {pointB !== null && duration > 0 && (
-              <span className="marker marker-b" style={{ left: `${(pointB / duration) * 100}%` }} />
-            )}
-          </button>
+          <div className="gesture-layer" aria-hidden="true" />
         </div>
       </section>
 
