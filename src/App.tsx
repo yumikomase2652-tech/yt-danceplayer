@@ -13,6 +13,8 @@ type SavedState = {
   videoId: string;
   mirrored: boolean;
   scale: number;
+  translateX: number;
+  translateY: number;
   speed: number;
 };
 
@@ -20,8 +22,13 @@ type TouchSnapshot = {
   x: number;
   y: number;
   startTime: number;
+  moved?: boolean;
   distance?: number;
   scale?: number;
+  centerX?: number;
+  centerY?: number;
+  translateX?: number;
+  translateY?: number;
   pinching: boolean;
 };
 
@@ -30,6 +37,8 @@ const defaultState: SavedState = {
   videoId: "",
   mirrored: false,
   scale: 1,
+  translateX: 0,
+  translateY: 0,
   speed: 1
 };
 
@@ -99,6 +108,8 @@ export function App() {
   const [videoId, setVideoId] = useState(saved.videoId);
   const [mirrored, setMirrored] = useState(saved.mirrored);
   const [scale, setScale] = useState(saved.scale);
+  const [translateX, setTranslateX] = useState(saved.translateX);
+  const [translateY, setTranslateY] = useState(saved.translateY);
   const [speed, setSpeed] = useState(saved.speed);
   const [isPlaying, setIsPlaying] = useState(false);
   const [loading, setLoading] = useState(Boolean(saved.videoId));
@@ -109,15 +120,29 @@ export function App() {
   const [seekToast, setSeekToast] = useState("");
 
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const videoStageRef = useRef<HTMLDivElement | null>(null);
   const touchRef = useRef<TouchSnapshot | null>(null);
   const currentTimeRef = useRef(0);
   const seekToastTimerRef = useRef<number | null>(null);
+  const lastTapRef = useRef<{ time: number; x: number; y: number } | null>(null);
 
   const embedUrl = videoId ? buildEmbedUrl(videoId) : "";
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ url, videoId, mirrored, scale, speed }));
-  }, [url, videoId, mirrored, scale, speed]);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ url, videoId, mirrored, scale, translateX, translateY, speed }));
+  }, [url, videoId, mirrored, scale, translateX, translateY, speed]);
+
+  useEffect(() => {
+    if (scale <= 1) {
+      setTranslateX(0);
+      setTranslateY(0);
+      return;
+    }
+
+    const nextTranslate = clampTranslate(translateX, translateY, scale);
+    if (nextTranslate.x !== translateX) setTranslateX(nextTranslate.x);
+    if (nextTranslate.y !== translateY) setTranslateY(nextTranslate.y);
+  }, [scale]);
 
   useEffect(() => {
     const preventGesture = (event: Event) => event.preventDefault();
@@ -248,17 +273,48 @@ export function App() {
     return Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
   };
 
+  const touchCenter = (touches: React.TouchList) => {
+    const [a, b] = [touches[0], touches[1]];
+    return {
+      x: (a.clientX + b.clientX) / 2,
+      y: (a.clientY + b.clientY) / 2
+    };
+  };
+
+  const clampTranslate = (x: number, y: number, nextScale: number) => {
+    const rect = videoStageRef.current?.getBoundingClientRect();
+    if (!rect || nextScale <= 1) return { x: 0, y: 0 };
+
+    const maxX = (rect.width * (nextScale - 1)) / 2;
+    const maxY = (rect.height * (nextScale - 1)) / 2;
+    return {
+      x: clamp(x, -maxX, maxX),
+      y: clamp(y, -maxY, maxY)
+    };
+  };
+
+  const resetZoom = () => {
+    setScale(1);
+    setTranslateX(0);
+    setTranslateY(0);
+  };
+
   const onStageTouchStart = (event: React.TouchEvent<HTMLDivElement>) => {
     setSpeedMenuOpen(false);
     event.preventDefault();
 
     if (event.touches.length === 2) {
+      const center = touchCenter(event.touches);
       touchRef.current = {
         x: 0,
         y: 0,
         startTime: currentTimeRef.current,
         distance: touchDistance(event.touches),
         scale,
+        centerX: center.x,
+        centerY: center.y,
+        translateX,
+        translateY,
         pinching: true
       };
       setDragDelta(null);
@@ -270,6 +326,7 @@ export function App() {
       x: touch.clientX,
       y: touch.clientY,
       startTime: currentTimeRef.current,
+      moved: false,
       pinching: false
     };
   };
@@ -282,7 +339,16 @@ export function App() {
 
     if (event.touches.length === 2 && start.distance && start.scale) {
       touchRef.current = { ...start, pinching: true };
-      setScale(clamp(start.scale * (touchDistance(event.touches) / start.distance), 1, 3));
+      const center = touchCenter(event.touches);
+      const nextScale = clamp(start.scale * (touchDistance(event.touches) / start.distance), 1, 3);
+      const baseX = start.translateX ?? 0;
+      const baseY = start.translateY ?? 0;
+      const nextX = nextScale > 1 ? baseX + center.x - (start.centerX ?? center.x) : 0;
+      const nextY = nextScale > 1 ? baseY + center.y - (start.centerY ?? center.y) : 0;
+      const nextTranslate = clampTranslate(nextX, nextY, nextScale);
+      setScale(nextScale);
+      setTranslateX(nextTranslate.x);
+      setTranslateY(nextTranslate.y);
       setDragDelta(null);
       return;
     }
@@ -293,16 +359,36 @@ export function App() {
     const rect = event.currentTarget.getBoundingClientRect();
     const ratioY = clamp((start.y - rect.top) / rect.height, 0, 1);
     const sensitivity = ratioY < 1 / 3 ? 0.2 : ratioY < 2 / 3 ? 0.05 : 0.01;
-    setDragDelta((touch.clientX - start.x) * sensitivity);
+    const deltaX = touch.clientX - start.x;
+    if (Math.abs(deltaX) > 4) {
+      touchRef.current = { ...start, moved: true };
+      setDragDelta(deltaX * sensitivity);
+    }
   };
 
-  const onStageTouchEnd = () => {
-    if (touchRef.current && !touchRef.current.pinching && dragDelta !== null) {
-      const nextTime = Math.max(0, touchRef.current.startTime + dragDelta);
+  const onStageTouchEnd = (event?: React.TouchEvent<HTMLDivElement>) => {
+    const snapshot = touchRef.current;
+    if (snapshot && !snapshot.pinching && dragDelta !== null) {
+      const nextTime = Math.max(0, snapshot.startTime + dragDelta);
       currentTimeRef.current = nextTime;
       setSeekPercent(clamp(nextTime / APPROX_DURATION_SECONDS, 0, 1));
       seekTo(nextTime);
       showSeekToast(dragDelta, nextTime);
+    } else if (snapshot && !snapshot.pinching && !snapshot.moved && event?.changedTouches[0]) {
+      const touch = event.changedTouches[0];
+      const now = Date.now();
+      const previous = lastTapRef.current;
+      if (
+        previous &&
+        now - previous.time < 300 &&
+        Math.abs(previous.x - touch.clientX) < 42 &&
+        Math.abs(previous.y - touch.clientY) < 42
+      ) {
+        resetZoom();
+        lastTapRef.current = null;
+      } else {
+        lastTapRef.current = { time: now, x: touch.clientX, y: touch.clientY };
+      }
     }
     touchRef.current = null;
     setDragDelta(null);
@@ -327,11 +413,11 @@ export function App() {
       </header>
 
       <section className="player-zone" aria-label="YouTube プレーヤー">
-        <div className="video-stage">
+        <div className="video-stage" ref={videoStageRef} onDoubleClick={resetZoom}>
           <div
             className="videoTransformLayer"
             style={{
-              transform: `scale(${scale}) ${mirrored ? "scaleX(-1)" : ""}`
+              transform: `translate(${translateX}px, ${translateY}px) scale(${scale}) ${mirrored ? "scaleX(-1)" : ""}`
             }}
           >
             {embedUrl && (
