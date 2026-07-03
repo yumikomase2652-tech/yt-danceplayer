@@ -162,6 +162,21 @@ button {
   text-align: center;
 }
 
+.status-message {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  right: 10px;
+  z-index: 4;
+  margin: 0;
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: rgba(12, 18, 22, 0.82);
+  color: rgba(255, 255, 255, 0.86);
+  font-weight: 850;
+  text-align: center;
+}
+
 .gesture-layer {
   position: absolute;
   inset: 0;

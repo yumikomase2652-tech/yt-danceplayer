@@ -200,8 +200,10 @@ export function App() {
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [playerReady, setPlayerReady] = useState(false);
   const [speedMenuOpen, setSpeedMenuOpen] = useState(false);
-  const [notice, setNotice] = useState("");
+  const [statusMessage, setStatusMessage] = useState("");
+  const [errorMessage, setErrorMessage] = useState("");
 
   const playerHostRef = useRef<HTMLDivElement | null>(null);
   const playerMountRef = useRef<HTMLDivElement | null>(null);
@@ -220,8 +222,6 @@ export function App() {
   const playerElementId = "youtube-player";
 
   const validLoop = pointA !== null && pointB !== null && pointB > pointA;
-  const progress = duration > 0 ? clamp((currentTime / duration) * 100, 0, 100) : 0;
-
   useEffect(() => {
     latestVideoIdRef.current = videoId;
     pendingVideoIdRef.current = videoId;
@@ -243,6 +243,7 @@ export function App() {
     }
     playerRef.current = null;
     playerReadyRef.current = false;
+    setPlayerReady(false);
     creatingPlayerRef.current = false;
     playerGenerationRef.current += 1;
     playerMountRef.current = null;
@@ -259,10 +260,12 @@ export function App() {
 
     if (!isYouTubePlayer(player) || !playerReadyRef.current || typeof player.loadVideoById !== "function") {
       pendingVideoIdRef.current = nextVideoId;
-      setNotice("動画プレーヤーの準備中です。もう一度読み込んでください。");
+      setStatusMessage("動画プレーヤーを準備中...");
       return false;
     }
 
+    setStatusMessage("");
+    setErrorMessage("");
     player.loadVideoById(nextVideoId);
     window.setTimeout(() => applyBestPlaybackQuality(player), 900);
     return true;
@@ -272,7 +275,9 @@ export function App() {
     if (!window.YT?.Player || !playerHostRef.current || creatingPlayerRef.current) return playerRef.current;
     if (isYouTubePlayer(playerRef.current)) return playerRef.current;
 
-    destroyPlayer();
+    if (playerRef.current) {
+      destroyPlayer();
+    }
     creatingPlayerRef.current = true;
     pendingVideoIdRef.current = initialVideoId;
     const generation = playerGenerationRef.current;
@@ -303,16 +308,19 @@ export function App() {
           console.log("player ready");
           playerRef.current = event.target;
           playerReadyRef.current = true;
+          setPlayerReady(true);
           creatingPlayerRef.current = false;
           console.log("playerRef.current", playerRef.current);
           console.log("typeof loadVideoById", typeof playerRef.current?.loadVideoById);
           event.target.setPlaybackRate(latestSpeedRef.current);
           applyBestPlaybackQuality(event.target);
           setDuration(event.target.getDuration() || 0);
-          setNotice("");
+          setStatusMessage("");
+          setErrorMessage("");
 
           const pendingVideoId = pendingVideoIdRef.current || latestVideoIdRef.current;
           if (pendingVideoId && typeof event.target.loadVideoById === "function") {
+            console.log("loading pending videoId on ready", pendingVideoId);
             event.target.loadVideoById(pendingVideoId);
             window.setTimeout(() => applyBestPlaybackQuality(event.target), 900);
           }
@@ -324,7 +332,8 @@ export function App() {
         onError: (event) => {
           if (generation !== playerGenerationRef.current) return;
           console.log("player error code", event.data);
-          setNotice(playerErrorMessage(event.data));
+          setStatusMessage("");
+          setErrorMessage(playerErrorMessage(event.data));
         }
       }
     });
@@ -344,14 +353,20 @@ export function App() {
     }).catch((error: unknown) => {
       const message = error instanceof Error ? error.message : "YouTube IFrame Player API の読み込みに失敗しました。";
       console.log("YT API load error", message);
-      setNotice(message);
+      setStatusMessage("");
+      setErrorMessage(message);
     });
 
     return () => {
       disposed = true;
-      destroyPlayer();
     };
-  }, [createPlayer, destroyPlayer]);
+  }, [createPlayer]);
+
+  useEffect(() => {
+    if (playerReady && videoId) {
+      safeLoadVideo(videoId);
+    }
+  }, [playerReady, safeLoadVideo, videoId]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -414,7 +429,7 @@ export function App() {
   const togglePlay = useCallback(() => {
     const player = playerRef.current;
     if (!isYouTubePlayer(player) || !playerReadyRef.current || !videoId) {
-      setNotice("動画プレーヤーの準備中です。もう一度読み込んでください。");
+      setStatusMessage("動画プレーヤーを準備中...");
       return;
     }
 
@@ -434,14 +449,17 @@ export function App() {
     console.log("extracted videoId", nextId);
 
     if (!nextId) {
-      setNotice("YouTube URL または動画 ID を入力してください。");
+      setStatusMessage("");
+      setErrorMessage("YouTube URL または動画 ID を入力してください。");
       return;
     }
 
+    pendingVideoIdRef.current = nextId;
     setVideoId(nextId);
     setCurrentTime(0);
     setDuration(0);
-    setNotice("YouTube Player を読み込んでいます...");
+    setErrorMessage("");
+    setStatusMessage("動画プレーヤーを準備中...");
 
     try {
       await loadYouTubeApi();
@@ -453,7 +471,8 @@ export function App() {
     } catch (error) {
       const message = error instanceof Error ? error.message : "YouTube IFrame Player API の読み込みに失敗しました。";
       console.log("YT API load error", message);
-      setNotice(message);
+      setStatusMessage("");
+      setErrorMessage(message);
     }
   }, [createPlayer, safeLoadVideo, url]);
 
@@ -651,7 +670,8 @@ export function App() {
             </div>
           )}
 
-          {notice && <p className="notice">{notice}</p>}
+          {statusMessage && <p className="status-message">{statusMessage}</p>}
+          {errorMessage && <p className="notice">{errorMessage}</p>}
 
           <div className="gesture-layer" aria-hidden="true" />
         </div>
