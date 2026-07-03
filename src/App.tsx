@@ -192,11 +192,17 @@ export function App() {
   const setPlaybackRate = (rate: number) => postToPlayer("setPlaybackRate", [rate]);
   const setPlaybackQuality = (quality: string) => postToPlayer("setPlaybackQuality", [quality]);
   const setPlaybackQualityRange = (quality: string) => postToPlayer("setPlaybackQualityRange", [quality, quality]);
-  const unloadCaptions = () => postToPlayer("unloadModule", ["captions"]);
+  const disableCaptions = () => {
+    // 字幕OFF命令はYouTube側で無視される場合があります。cc_load_policy=0 と併用して、効く範囲で抑制します。
+    postToPlayer("unloadModule", ["captions"]);
+    postToPlayer("unloadModule", ["cc"]);
+    postToPlayer("setOption", ["captions", "track", {}]);
+    postToPlayer("setOption", ["cc", "track", {}]);
+  };
 
   const applyPlaybackPreferences = () => {
     setPlaybackRate(speed);
-    unloadCaptions();
+    disableCaptions();
     // postMessageの画質指定はYouTube側で無視される場合があります。iframe src の vq も併用します。
     setPlaybackQuality(EXPERIMENTAL_QUALITY);
     setPlaybackQualityRange(EXPERIMENTAL_QUALITY);
@@ -233,10 +239,12 @@ export function App() {
     setErrorMessage("");
     setIsPlaying(false);
     setSeekPercent(0);
+    window.setTimeout(disableCaptions, 500);
   };
 
   const togglePlay = () => {
     if (!videoId) return;
+    disableCaptions();
     if (isPlaying) {
       pauseVideo();
       setIsPlaying(false);
@@ -244,6 +252,7 @@ export function App() {
       playVideo();
       setIsPlaying(true);
     }
+    window.setTimeout(disableCaptions, 500);
   };
 
   const jumpBy = (seconds: number) => {
@@ -441,6 +450,7 @@ export function App() {
                   setLoading(false);
                   setErrorMessage("");
                   applyPlaybackPreferences();
+                  window.setTimeout(disableCaptions, 800);
                   console.log("iframe loaded", embedUrl);
                 }}
               />
