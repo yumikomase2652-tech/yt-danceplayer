@@ -110,7 +110,8 @@ button {
   -webkit-user-select: none;
 }
 
-.video-transform {
+.video-transform,
+.videoTransformLayer {
   position: absolute;
   inset: 0;
   overflow: hidden;
@@ -122,16 +123,40 @@ button {
 
 .video-transform iframe,
 .video-transform > div,
+.videoTransformLayer iframe,
+.videoTransformLayer > div,
 .youtube-player-host,
-.youtube-player-host > div {
+.youtube-player-host > div,
+.player-mount,
+.player-mount > iframe {
   width: 100%;
   height: 100%;
 }
 
-.video-transform iframe {
+.video-transform iframe,
+.videoTransformLayer iframe,
+.player-mount iframe {
   display: block;
   border: 0;
   background: #000;
+}
+
+.player-mount {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.player-mount.is-ready {
+  opacity: 1;
+}
+
+.fallback-iframe {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
 }
 
 .empty-state {
@@ -188,6 +213,11 @@ button {
   inset: 0;
   z-index: 2;
   pointer-events: none;
+}
+
+.gesture-layer.is-enabled {
+  pointer-events: auto;
+  touch-action: none;
 }
 
 .time-overlay {
@@ -264,6 +294,13 @@ button {
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.12);
   font-weight: 900;
+  touch-action: manipulation;
+}
+
+.icon-button:disabled,
+.play-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 
 .icon-button {

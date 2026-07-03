@@ -1,8 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { FlipHorizontal2, Gauge, Play, ScanSearch, SkipBack, SkipForward, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FlipHorizontal2, Gauge, Pause, Play, ScanSearch, SkipBack, SkipForward, X } from "lucide-react";
 
 const STORAGE_KEY = "furi-practice-player-state";
+const YOUTUBE_API_SRC = "https://www.youtube.com/iframe_api";
 const SPEEDS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2];
+
+let youtubeApiPromise: Promise<typeof YT> | null = null;
 
 type SavedState = {
   url: string;
@@ -16,6 +19,8 @@ type SavedState = {
 
 type TouchSnapshot = {
   x: number;
+  y: number;
+  time: number;
   distance?: number;
   scale?: number;
 };
@@ -90,6 +95,62 @@ function buildEmbedUrl(videoId: string) {
   return `https://www.youtube.com/embed/${videoId}?${params.toString()}`;
 }
 
+function loadYouTubeApi() {
+  if (window.YT?.Player) return Promise.resolve(window.YT);
+  if (youtubeApiPromise) return youtubeApiPromise;
+
+  youtubeApiPromise = new Promise<typeof YT>((resolve, reject) => {
+    const timeoutId = window.setTimeout(() => {
+      youtubeApiPromise = null;
+      reject(new Error("YouTube Player API の読み込みに失敗しました。通常の動画表示に切り替えます。"));
+    }, 10000);
+
+    window.onYouTubeIframeAPIReady = () => {
+      window.clearTimeout(timeoutId);
+      if (window.YT?.Player) {
+        console.log("YT API loaded");
+        resolve(window.YT);
+        return;
+      }
+      youtubeApiPromise = null;
+      reject(new Error("YouTube Player API の準備に失敗しました。通常の動画表示に切り替えます。"));
+    };
+
+    const existingScript = document.querySelector<HTMLScriptElement>(`script[src="${YOUTUBE_API_SRC}"]`);
+    if (existingScript) return;
+
+    const script = document.createElement("script");
+    script.src = YOUTUBE_API_SRC;
+    script.async = true;
+    script.onerror = () => {
+      window.clearTimeout(timeoutId);
+      youtubeApiPromise = null;
+      reject(new Error("YouTube Player API script の読み込みに失敗しました。通常の動画表示に切り替えます。"));
+    };
+    document.head.appendChild(script);
+  });
+
+  return youtubeApiPromise;
+}
+
+function isPlayerReady(player: YT.Player | null): player is YT.Player {
+  return (
+    player !== null &&
+    typeof player.playVideo === "function" &&
+    typeof player.pauseVideo === "function" &&
+    typeof player.seekTo === "function" &&
+    typeof player.loadVideoById === "function" &&
+    typeof player.getCurrentTime === "function" &&
+    typeof player.getDuration === "function"
+  );
+}
+
+function playerErrorMessage(code: number) {
+  if (code === 101 || code === 150) return "この動画は外部サイトでの再生が許可されていない可能性があります。";
+  if (code === 100) return "動画が見つかりません。削除済み、非公開、またはURLが違う可能性があります。";
+  return `YouTube Player API でエラーが発生しました。通常の動画表示に切り替えます。コード: ${code}`;
+}
+
 export function App() {
   const saved = useMemo(readSavedState, []);
   const [url, setUrl] = useState(saved.url);
@@ -99,19 +160,116 @@ export function App() {
   const [speed, setSpeed] = useState(saved.speed);
   const [pointA, setPointA] = useState<number | null>(saved.pointA);
   const [pointB, setPointB] = useState<number | null>(saved.pointB);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [playerReady, setPlayerReady] = useState(false);
+  const [apiFailed, setApiFailed] = useState(false);
   const [speedMenuOpen, setSpeedMenuOpen] = useState(false);
   const [statusMessage, setStatusMessage] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
 
+  const playerRef = useRef<YT.Player | null>(null);
+  const playerMountRef = useRef<HTMLDivElement | null>(null);
   const touchRef = useRef<TouchSnapshot | null>(null);
-  const iframeLoadedRef = useRef(false);
+  const creatingPlayerRef = useRef(false);
+  const latestSpeedRef = useRef(speed);
 
   const embedUrl = videoId ? buildEmbedUrl(videoId) : "";
+  const fallbackVisible = Boolean(videoId && (!playerReady || apiFailed));
+  const controlsDisabled = !playerReady || !isPlayerReady(playerRef.current);
 
   useEffect(() => {
     const nextState: SavedState = { url, videoId, mirrored, scale, speed, pointA, pointB };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(nextState));
   }, [url, videoId, mirrored, scale, speed, pointA, pointB]);
+
+  useEffect(() => {
+    latestSpeedRef.current = speed;
+  }, [speed]);
+
+  const createPlayer = useCallback(async (nextVideoId: string) => {
+    if (!playerMountRef.current || creatingPlayerRef.current || isPlayerReady(playerRef.current)) return;
+
+    creatingPlayerRef.current = true;
+    setStatusMessage("操作機能を準備中...");
+
+    try {
+      await loadYouTubeApi();
+      if (!playerMountRef.current || isPlayerReady(playerRef.current)) return;
+
+      playerRef.current = new YT.Player(playerMountRef.current, {
+        width: "100%",
+        height: "100%",
+        videoId: nextVideoId,
+        playerVars: {
+          playsinline: 1,
+          rel: 0,
+          modestbranding: 1,
+          controls: 0,
+          fs: 0,
+          iv_load_policy: 3,
+          disablekb: 1,
+          origin: window.location.origin
+        },
+        events: {
+          onReady: (event) => {
+            console.log("player ready");
+            playerRef.current = event.target;
+            setPlayerReady(true);
+            setApiFailed(false);
+            setStatusMessage("");
+            setErrorMessage("");
+            event.target.setPlaybackRate(latestSpeedRef.current);
+            event.target.loadVideoById(nextVideoId);
+          },
+          onStateChange: (event) => {
+            setIsPlaying(event.data === YT.PlayerState.PLAYING);
+          },
+          onError: (event) => {
+            console.log("player error code", event.data);
+            setPlayerReady(false);
+            setApiFailed(true);
+            setStatusMessage("");
+            setErrorMessage(playerErrorMessage(event.data));
+          }
+        }
+      });
+    } catch (error) {
+      console.log("YT API fallback", error);
+      setPlayerReady(false);
+      setApiFailed(true);
+      setStatusMessage("");
+    } finally {
+      creatingPlayerRef.current = false;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!videoId) return;
+
+    const player = playerRef.current;
+    if (isPlayerReady(player) && playerReady) {
+      player.loadVideoById(videoId);
+      player.setPlaybackRate(latestSpeedRef.current);
+      setApiFailed(false);
+      return;
+    }
+
+    createPlayer(videoId);
+  }, [createPlayer, playerReady, videoId]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      const player = playerRef.current;
+      if (!isPlayerReady(player) || !playerReady) return;
+
+      setCurrentTime(player.getCurrentTime() || 0);
+      setDuration(player.getDuration() || 0);
+    }, 250);
+
+    return () => window.clearInterval(timer);
+  }, [playerReady]);
 
   const loadVideo = () => {
     const nextId = extractVideoId(url);
@@ -123,15 +281,45 @@ export function App() {
       return;
     }
 
-    iframeLoadedRef.current = false;
     setVideoId(nextId);
+    setCurrentTime(0);
+    setDuration(0);
     setStatusMessage("動画を読み込んでいます...");
     setErrorMessage("");
+    setApiFailed(false);
   };
 
-  const showApiPendingStatus = () => {
-    // 再生/停止、シーク、速度、A-B は iframe 表示復旧後に YouTube Player API へ段階的に戻す。
-    setStatusMessage("再生操作は次の段階で YouTube Player API に戻します。動画内をタップして再生してください。");
+  const requireReady = () => {
+    if (!controlsDisabled) return true;
+    setStatusMessage("操作機能を準備中です。動画表示はそのまま使えます。");
+    return false;
+  };
+
+  const togglePlay = () => {
+    if (!requireReady()) return;
+    const player = playerRef.current!;
+    if (isPlaying) {
+      player.pauseVideo();
+    } else {
+      player.playVideo();
+    }
+  };
+
+  const jump = (seconds: number) => {
+    if (!requireReady()) return;
+    const player = playerRef.current!;
+    player.seekTo(Math.max(0, (player.getCurrentTime() || 0) + seconds), true);
+  };
+
+  const changeSpeed = (nextSpeed: number) => {
+    setSpeed(nextSpeed);
+    setSpeedMenuOpen(false);
+    const player = playerRef.current;
+    if (isPlayerReady(player) && playerReady) {
+      player.setPlaybackRate(nextSpeed);
+    } else {
+      setStatusMessage("速度変更は操作機能の準備後に反映されます。");
+    }
   };
 
   const touchDistance = (touches: React.TouchList) => {
@@ -144,22 +332,29 @@ export function App() {
     if (event.touches.length === 2) {
       touchRef.current = {
         x: 0,
+        y: 0,
+        time: currentTime,
         distance: touchDistance(event.touches),
         scale
       };
       return;
     }
 
-    touchRef.current = { x: event.touches[0].clientX };
+    touchRef.current = {
+      x: event.touches[0].clientX,
+      y: event.touches[0].clientY,
+      time: currentTime
+    };
   };
 
   const onStageTouchMove = (event: React.TouchEvent<HTMLDivElement>) => {
     const start = touchRef.current;
     if (!start) return;
+    event.preventDefault();
 
     if (event.touches.length === 2 && start.distance && start.scale) {
-      event.preventDefault();
       setScale(clamp(start.scale * (touchDistance(event.touches) / start.distance), 1, 3));
+      return;
     }
   };
 
@@ -186,32 +381,42 @@ export function App() {
       </header>
 
       <section className="player-zone" aria-label="YouTube プレーヤー">
-        <div className="video-stage" onTouchStart={onStageTouchStart} onTouchMove={onStageTouchMove} onTouchEnd={onStageTouchEnd}>
+        <div className="video-stage">
           <div
-            className="video-transform"
+            className="videoTransformLayer"
             style={{
               transform: `scale(${scale}) ${mirrored ? "scaleX(-1)" : ""}`
             }}
           >
-            {embedUrl && (
+            {fallbackVisible && (
               <iframe
-                title="YouTube video player"
+                className="fallback-iframe"
+                title="YouTube fallback video player"
                 src={embedUrl}
                 allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
                 allowFullScreen={false}
                 referrerPolicy="strict-origin-when-cross-origin"
                 onLoad={() => {
-                  iframeLoadedRef.current = true;
-                  setStatusMessage("");
-                  console.log("iframe loaded", embedUrl);
+                  if (!playerReady) setStatusMessage("");
+                  console.log("fallback iframe loaded", embedUrl);
                 }}
                 onError={() => {
-                  setStatusMessage("");
                   setErrorMessage("動画の埋め込み再生が許可されていない可能性があります。YouTubeで直接確認してください。");
                 }}
               />
             )}
+            <div className={`player-mount ${playerReady && !apiFailed ? "is-ready" : ""}`} ref={playerMountRef} />
           </div>
+
+          {playerReady && (
+            <div
+              className="gesture-layer is-enabled"
+              aria-hidden="true"
+              onTouchStart={onStageTouchStart}
+              onTouchMove={onStageTouchMove}
+              onTouchEnd={onStageTouchEnd}
+            />
+          )}
 
           {!videoId && (
             <div className="empty-state">
@@ -226,14 +431,14 @@ export function App() {
       </section>
 
       <footer className="bottom-bar" aria-label="操作バー">
-        <button className="icon-button" type="button" onClick={showApiPendingStatus} aria-label="5秒戻る">
+        <button className="icon-button" type="button" onClick={() => jump(-5)} disabled={controlsDisabled} aria-label="5秒戻る">
           <SkipBack />
           <span>-5</span>
         </button>
-        <button className="play-button" type="button" onClick={showApiPendingStatus} aria-label="再生停止">
-          <Play />
+        <button className="play-button" type="button" onClick={togglePlay} disabled={controlsDisabled} aria-label="再生停止">
+          {isPlaying ? <Pause /> : <Play />}
         </button>
-        <button className="icon-button" type="button" onClick={showApiPendingStatus} aria-label="5秒進む">
+        <button className="icon-button" type="button" onClick={() => jump(5)} disabled={controlsDisabled} aria-label="5秒進む">
           <SkipForward />
           <span>+5</span>
         </button>
@@ -259,42 +464,17 @@ export function App() {
           {speedMenuOpen && (
             <div className="speed-popover" role="menu">
               {SPEEDS.map((value) => (
-                <button
-                  className={speed === value ? "is-active" : ""}
-                  type="button"
-                  key={value}
-                  onClick={() => {
-                    setSpeed(value);
-                    setSpeedMenuOpen(false);
-                    showApiPendingStatus();
-                  }}
-                >
+                <button className={speed === value ? "is-active" : ""} type="button" key={value} onClick={() => changeSpeed(value)}>
                   {value}x
                 </button>
               ))}
             </div>
           )}
         </div>
-        <button
-          className={`text-button ${pointA !== null ? "has-point" : ""}`}
-          type="button"
-          onClick={() => {
-            setPointA(0);
-            showApiPendingStatus();
-          }}
-          aria-label="A点"
-        >
+        <button className={`text-button ${pointA !== null ? "has-point" : ""}`} type="button" onClick={() => setPointA(currentTime)} aria-label="A点">
           A
         </button>
-        <button
-          className={`text-button ${pointB !== null ? "has-point" : ""}`}
-          type="button"
-          onClick={() => {
-            setPointB(0);
-            showApiPendingStatus();
-          }}
-          aria-label="B点"
-        >
+        <button className={`text-button ${pointB !== null ? "has-point" : ""}`} type="button" onClick={() => setPointB(currentTime)} aria-label="B点">
           B
         </button>
         <button
