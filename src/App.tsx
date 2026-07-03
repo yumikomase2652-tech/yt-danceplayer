@@ -125,6 +125,9 @@ export function App() {
   const videoStageRef = useRef<HTMLDivElement | null>(null);
   const touchRef = useRef<TouchSnapshot | null>(null);
   const currentTimeRef = useRef(0);
+  const lastTargetTimeRef = useRef(0);
+  const seekFrameRef = useRef<number | null>(null);
+  const seekTimeoutRef = useRef<number | null>(null);
   const seekToastTimerRef = useRef<number | null>(null);
   const lastTapRef = useRef<{ time: number; x: number; y: number } | null>(null);
 
@@ -172,6 +175,8 @@ export function App() {
   useEffect(() => {
     return () => {
       if (seekToastTimerRef.current) window.clearTimeout(seekToastTimerRef.current);
+      if (seekTimeoutRef.current) window.clearTimeout(seekTimeoutRef.current);
+      if (seekFrameRef.current) window.cancelAnimationFrame(seekFrameRef.current);
     };
   }, []);
 
@@ -225,6 +230,22 @@ export function App() {
     seekToastTimerRef.current = window.setTimeout(() => setSeekToast(""), 1000);
   };
 
+  const cancelPendingSeek = () => {
+    if (seekTimeoutRef.current) {
+      window.clearTimeout(seekTimeoutRef.current);
+      seekTimeoutRef.current = null;
+    }
+    if (seekFrameRef.current) {
+      window.cancelAnimationFrame(seekFrameRef.current);
+      seekFrameRef.current = null;
+    }
+  };
+
+  const seekImmediately = (targetTime: number) => {
+    cancelPendingSeek();
+    seekTo(targetTime);
+  };
+
   const loadVideo = () => {
     const nextId = extractVideoId(url);
     console.log("extracted videoId", nextId);
@@ -259,8 +280,9 @@ export function App() {
     const nextTime = Math.max(0, currentTimeRef.current + seconds);
     const nextPercent = clamp(nextTime / APPROX_DURATION_SECONDS, 0, 1);
     currentTimeRef.current = nextTime;
+    lastTargetTimeRef.current = nextTime;
     setSeekPercent(nextPercent);
-    seekTo(nextTime);
+    seekImmediately(nextTime);
     showSeekToast(seconds, nextTime);
   };
 
@@ -274,8 +296,9 @@ export function App() {
     const nextPercent = clamp((clientX - rect.left) / rect.width, 0, 1);
     const nextTime = nextPercent * APPROX_DURATION_SECONDS;
     currentTimeRef.current = nextTime;
+    lastTargetTimeRef.current = nextTime;
     setSeekPercent(nextPercent);
-    seekTo(nextTime);
+    seekImmediately(nextTime);
     showSeekToast(0, nextTime);
   };
 
@@ -329,6 +352,7 @@ export function App() {
         pinching: true
       };
       setDragDelta(null);
+      lastTargetTimeRef.current = currentTimeRef.current;
       return;
     }
 
@@ -361,6 +385,7 @@ export function App() {
       setTranslateX(nextTranslate.x);
       setTranslateY(nextTranslate.y);
       setDragDelta(null);
+      lastTargetTimeRef.current = currentTimeRef.current;
       return;
     }
 
@@ -373,18 +398,24 @@ export function App() {
     const deltaX = touch.clientX - start.x;
     if (Math.abs(deltaX) > 4) {
       touchRef.current = { ...start, moved: true };
-      setDragDelta(deltaX * sensitivity);
+      const delta = deltaX * sensitivity;
+      const targetTime = Math.max(0, start.startTime + delta);
+      lastTargetTimeRef.current = targetTime;
+      setDragDelta(delta);
+      setSeekPercent(clamp(targetTime / APPROX_DURATION_SECONDS, 0, 1));
+      seekImmediately(targetTime);
     }
   };
 
   const onStageTouchEnd = (event?: React.TouchEvent<HTMLDivElement>) => {
     const snapshot = touchRef.current;
     if (snapshot && !snapshot.pinching && dragDelta !== null) {
-      const nextTime = Math.max(0, snapshot.startTime + dragDelta);
-      currentTimeRef.current = nextTime;
-      setSeekPercent(clamp(nextTime / APPROX_DURATION_SECONDS, 0, 1));
-      seekTo(nextTime);
-      showSeekToast(dragDelta, nextTime);
+      cancelPendingSeek();
+      const targetTime = lastTargetTimeRef.current;
+      currentTimeRef.current = targetTime;
+      setSeekPercent(clamp(targetTime / APPROX_DURATION_SECONDS, 0, 1));
+      seekTo(targetTime);
+      showSeekToast(dragDelta, targetTime);
     } else if (snapshot && !snapshot.pinching && !snapshot.moved && event?.changedTouches[0]) {
       const touch = event.changedTouches[0];
       const now = Date.now();
