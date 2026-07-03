@@ -3,6 +3,8 @@ import { FlipHorizontal2, Gauge, Pause, Play, ScanSearch, SkipBack, SkipForward 
 
 const STORAGE_KEY = "d-player-state";
 const SPEEDS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2];
+const SHOW_YOUTUBE_CONTROLS = false;
+const APPROX_DURATION_SECONDS = 180;
 
 type SavedState = {
   url: string;
@@ -13,8 +15,12 @@ type SavedState = {
 };
 
 type TouchSnapshot = {
-  distance: number;
-  scale: number;
+  x: number;
+  y: number;
+  startTime: number;
+  distance?: number;
+  scale?: number;
+  pinching: boolean;
 };
 
 const defaultState: SavedState = {
@@ -72,7 +78,10 @@ function buildEmbedUrl(videoId: string) {
     playsinline: "1",
     rel: "0",
     modestbranding: "1",
-    controls: "1",
+    controls: SHOW_YOUTUBE_CONTROLS ? "1" : "0",
+    iv_load_policy: "3",
+    fs: "0",
+    disablekb: "1",
     origin: window.location.origin
   });
 
@@ -91,15 +100,30 @@ export function App() {
   const [speedMenuOpen, setSpeedMenuOpen] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
   const [seekPercent, setSeekPercent] = useState(0);
+  const [dragDelta, setDragDelta] = useState<number | null>(null);
 
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const touchRef = useRef<TouchSnapshot | null>(null);
+  const currentTimeRef = useRef(0);
 
   const embedUrl = videoId ? buildEmbedUrl(videoId) : "";
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ url, videoId, mirrored, scale, speed }));
   }, [url, videoId, mirrored, scale, speed]);
+
+  useEffect(() => {
+    const preventGesture = (event: Event) => event.preventDefault();
+    document.addEventListener("gesturestart", preventGesture, { passive: false });
+    document.addEventListener("gesturechange", preventGesture, { passive: false });
+    document.addEventListener("gestureend", preventGesture, { passive: false });
+
+    return () => {
+      document.removeEventListener("gesturestart", preventGesture);
+      document.removeEventListener("gesturechange", preventGesture);
+      document.removeEventListener("gestureend", preventGesture);
+    };
+  }, []);
 
   useEffect(() => {
     if (!loading) return;
@@ -155,9 +179,11 @@ export function App() {
   };
 
   const jumpBy = (seconds: number) => {
-    const nextPercent = clamp(seekPercent + seconds / 180, 0, 1);
+    const nextTime = Math.max(0, currentTimeRef.current + seconds);
+    const nextPercent = clamp(nextTime / APPROX_DURATION_SECONDS, 0, 1);
+    currentTimeRef.current = nextTime;
     setSeekPercent(nextPercent);
-    seekTo(nextPercent * 180);
+    seekTo(nextTime);
   };
 
   const changeSpeed = (nextSpeed: number) => {
@@ -168,8 +194,10 @@ export function App() {
 
   const handleSeek = (clientX: number, rect: DOMRect) => {
     const nextPercent = clamp((clientX - rect.left) / rect.width, 0, 1);
+    const nextTime = nextPercent * APPROX_DURATION_SECONDS;
+    currentTimeRef.current = nextTime;
     setSeekPercent(nextPercent);
-    seekTo(nextPercent * 180);
+    seekTo(nextTime);
   };
 
   const touchDistance = (touches: React.TouchList) => {
@@ -179,24 +207,61 @@ export function App() {
 
   const onStageTouchStart = (event: React.TouchEvent<HTMLDivElement>) => {
     setSpeedMenuOpen(false);
-    if (event.touches.length !== 2) return;
+    event.preventDefault();
 
+    if (event.touches.length === 2) {
+      touchRef.current = {
+        x: 0,
+        y: 0,
+        startTime: currentTimeRef.current,
+        distance: touchDistance(event.touches),
+        scale,
+        pinching: true
+      };
+      setDragDelta(null);
+      return;
+    }
+
+    const touch = event.touches[0];
     touchRef.current = {
-      distance: touchDistance(event.touches),
-      scale
+      x: touch.clientX,
+      y: touch.clientY,
+      startTime: currentTimeRef.current,
+      pinching: false
     };
   };
 
   const onStageTouchMove = (event: React.TouchEvent<HTMLDivElement>) => {
     const start = touchRef.current;
-    if (!start || event.touches.length !== 2) return;
+    if (!start) return;
 
     event.preventDefault();
-    setScale(clamp(start.scale * (touchDistance(event.touches) / start.distance), 1, 3));
+
+    if (event.touches.length === 2 && start.distance && start.scale) {
+      touchRef.current = { ...start, pinching: true };
+      setScale(clamp(start.scale * (touchDistance(event.touches) / start.distance), 1, 3));
+      setDragDelta(null);
+      return;
+    }
+
+    if (event.touches.length !== 1 || start.pinching) return;
+
+    const touch = event.touches[0];
+    const rect = event.currentTarget.getBoundingClientRect();
+    const ratioY = clamp((start.y - rect.top) / rect.height, 0, 1);
+    const sensitivity = ratioY < 1 / 3 ? 0.2 : ratioY < 2 / 3 ? 0.05 : 0.01;
+    setDragDelta((touch.clientX - start.x) * sensitivity);
   };
 
   const onStageTouchEnd = () => {
+    if (touchRef.current && !touchRef.current.pinching && dragDelta !== null) {
+      const nextTime = Math.max(0, touchRef.current.startTime + dragDelta);
+      currentTimeRef.current = nextTime;
+      setSeekPercent(clamp(nextTime / APPROX_DURATION_SECONDS, 0, 1));
+      seekTo(nextTime);
+    }
     touchRef.current = null;
+    setDragDelta(null);
   };
 
   return (
@@ -218,7 +283,7 @@ export function App() {
       </header>
 
       <section className="player-zone" aria-label="YouTube プレーヤー">
-        <div className="video-stage" onTouchStart={onStageTouchStart} onTouchMove={onStageTouchMove} onTouchEnd={onStageTouchEnd}>
+        <div className="video-stage">
           <div
             className="videoTransformLayer"
             style={{
@@ -252,6 +317,17 @@ export function App() {
 
           {loading && <p className="status-message">動画を読み込んでいます...</p>}
           {errorMessage && <p className="notice">{errorMessage}</p>}
+          {dragDelta !== null && <p className="drag-delta">{dragDelta >= 0 ? "+" : ""}{dragDelta.toFixed(1)}s</p>}
+          {videoId && (
+            <div
+              className="gesture-layer is-enabled"
+              aria-hidden="true"
+              onTouchStart={onStageTouchStart}
+              onTouchMove={onStageTouchMove}
+              onTouchEnd={onStageTouchEnd}
+              onTouchCancel={onStageTouchEnd}
+            />
+          )}
         </div>
       </section>
 
