@@ -63,6 +63,18 @@ button {
   background: rgba(8, 10, 9, 0.96);
 }
 
+.ui-hidden .top-bar,
+.ui-hidden .seek-strip,
+.ui-hidden .bottom-bar {
+  height: 0;
+  min-height: 0;
+  opacity: 0;
+  overflow: hidden;
+  padding-top: 0;
+  padding-bottom: 0;
+  pointer-events: none;
+}
+
 .top-bar input {
   min-width: 0;
   height: 42px;
@@ -95,6 +107,10 @@ button {
   flex: 1 1 auto;
   min-height: 0;
   padding: 0 8px 6px;
+}
+
+.ui-hidden .player-zone {
+  padding: max(6px, env(safe-area-inset-top)) 0 max(6px, env(safe-area-inset-bottom));
 }
 
 .video-stage {

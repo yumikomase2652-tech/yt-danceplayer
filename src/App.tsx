@@ -7,6 +7,7 @@ const SHOW_YOUTUBE_CONTROLS = false;
 const PREFERRED_QUALITY = "hd1080";
 const EXPERIMENTAL_QUALITY = "highres";
 const APPROX_DURATION_SECONDS = 180;
+const MAX_SCALE = 5;
 
 type SavedState = {
   url: string;
@@ -118,6 +119,7 @@ export function App() {
   const [seekPercent, setSeekPercent] = useState(0);
   const [dragDelta, setDragDelta] = useState<number | null>(null);
   const [seekToast, setSeekToast] = useState("");
+  const [uiVisible, setUiVisible] = useState(true);
 
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const videoStageRef = useRef<HTMLDivElement | null>(null);
@@ -340,7 +342,7 @@ export function App() {
     if (event.touches.length === 2 && start.distance && start.scale) {
       touchRef.current = { ...start, pinching: true };
       const center = touchCenter(event.touches);
-      const nextScale = clamp(start.scale * (touchDistance(event.touches) / start.distance), 1, 3);
+      const nextScale = clamp(start.scale * (touchDistance(event.touches) / start.distance), 1, MAX_SCALE);
       const baseX = start.translateX ?? 0;
       const baseY = start.translateY ?? 0;
       const nextX = nextScale > 1 ? baseX + center.x - (start.centerX ?? center.x) : 0;
@@ -388,6 +390,7 @@ export function App() {
         lastTapRef.current = null;
       } else {
         lastTapRef.current = { time: now, x: touch.clientX, y: touch.clientY };
+        setUiVisible((value) => !value);
       }
     }
     touchRef.current = null;
@@ -395,8 +398,8 @@ export function App() {
   };
 
   return (
-    <main className="app-shell">
-      <header className="top-bar">
+    <main className={`app-shell ${uiVisible ? "" : "ui-hidden"}`}>
+      <header className="top-bar" onClick={(event) => event.stopPropagation()} onTouchStart={(event) => event.stopPropagation()}>
         <input
           value={url}
           onChange={(event) => setUrl(event.target.value)}
@@ -407,7 +410,13 @@ export function App() {
           placeholder="YouTube URL"
           aria-label="YouTube URL"
         />
-        <button type="button" onClick={loadVideo}>
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            loadVideo();
+          }}
+        >
           読込
         </button>
       </header>
@@ -467,12 +476,16 @@ export function App() {
         </div>
       </section>
 
-      <div className="seek-strip" aria-label="シークバー">
+      <div className="seek-strip" aria-label="シークバー" onClick={(event) => event.stopPropagation()} onTouchStart={(event) => event.stopPropagation()}>
         <button
           className="seek-track"
           type="button"
-          onClick={(event) => handleSeek(event.clientX, event.currentTarget.getBoundingClientRect())}
+          onClick={(event) => {
+            event.stopPropagation();
+            handleSeek(event.clientX, event.currentTarget.getBoundingClientRect());
+          }}
           onPointerMove={(event) => {
+            event.stopPropagation();
             if (event.buttons === 1) handleSeek(event.clientX, event.currentTarget.getBoundingClientRect());
           }}
         >
@@ -481,22 +494,52 @@ export function App() {
         </button>
       </div>
 
-      <footer className="bottom-bar" aria-label="操作バー">
-        <button className="icon-button" type="button" onClick={() => jumpBy(-5)} disabled={!videoId} aria-label="5秒戻る">
+      <footer className="bottom-bar" aria-label="操作バー" onClick={(event) => event.stopPropagation()} onTouchStart={(event) => event.stopPropagation()}>
+        <button
+          className="icon-button"
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            jumpBy(-5);
+          }}
+          disabled={!videoId}
+          aria-label="5秒戻る"
+        >
           <SkipBack />
           <span>-5</span>
         </button>
-        <button className="play-button" type="button" onClick={togglePlay} disabled={!videoId} aria-label="再生停止">
+        <button
+          className="play-button"
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            togglePlay();
+          }}
+          disabled={!videoId}
+          aria-label="再生停止"
+        >
           {isPlaying ? <Pause /> : <Play />}
         </button>
-        <button className="icon-button" type="button" onClick={() => jumpBy(5)} disabled={!videoId} aria-label="5秒進む">
+        <button
+          className="icon-button"
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            jumpBy(5);
+          }}
+          disabled={!videoId}
+          aria-label="5秒進む"
+        >
           <SkipForward />
           <span>+5</span>
         </button>
         <button
           className={`icon-button ${mirrored ? "is-active" : ""}`}
           type="button"
-          onClick={() => setMirrored((value) => !value)}
+          onClick={(event) => {
+            event.stopPropagation();
+            setMirrored((value) => !value);
+          }}
           disabled={!videoId}
           aria-label="左右反転"
         >
@@ -507,7 +550,10 @@ export function App() {
           <button
             className={`icon-button ${speedMenuOpen ? "is-active" : ""}`}
             type="button"
-            onClick={() => setSpeedMenuOpen((value) => !value)}
+            onClick={(event) => {
+              event.stopPropagation();
+              setSpeedMenuOpen((value) => !value);
+            }}
             disabled={!videoId}
             aria-label="速度"
           >
@@ -515,9 +561,17 @@ export function App() {
             <span>{speed}x</span>
           </button>
           {speedMenuOpen && (
-            <div className="speed-popover" role="menu">
+            <div className="speed-popover" role="menu" onClick={(event) => event.stopPropagation()} onTouchStart={(event) => event.stopPropagation()}>
               {SPEEDS.map((value) => (
-                <button className={speed === value ? "is-active" : ""} type="button" key={value} onClick={() => changeSpeed(value)}>
+                <button
+                  className={speed === value ? "is-active" : ""}
+                  type="button"
+                  key={value}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    changeSpeed(value);
+                  }}
+                >
                   {value}x
                 </button>
               ))}
