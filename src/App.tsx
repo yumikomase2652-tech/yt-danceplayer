@@ -136,6 +136,8 @@ export function App() {
   const touchRef = useRef<TouchSnapshot | null>(null);
   const pointerRef = useRef<PointerSnapshot | null>(null);
   const currentTimeRef = useRef(0);
+  const durationRef = useRef(APPROX_DURATION_SECONDS);
+  const lastClockTimeRef = useRef(0);
   const lastTargetTimeRef = useRef(0);
   const seekFrameRef = useRef<number | null>(null);
   const seekTimeoutRef = useRef<number | null>(null);
@@ -199,15 +201,25 @@ export function App() {
     };
   }, []);
 
-  const postToPlayer = (func: string, args: unknown[] = []) => {
+  const postRawToPlayer = (payload: unknown) => {
     iframeRef.current?.contentWindow?.postMessage(
-      JSON.stringify({
-        event: "command",
-        func,
-        args
-      }),
+      JSON.stringify(payload),
       "https://www.youtube.com"
     );
+  };
+
+  const postToPlayer = (func: string, args: unknown[] = []) => {
+    postRawToPlayer({
+      event: "command",
+      func,
+      args
+    });
+  };
+
+  const requestPlayerUpdates = () => {
+    postRawToPlayer({ event: "listening", id: "d-player" });
+    postToPlayer("addEventListener", ["onStateChange"]);
+    postToPlayer("addEventListener", ["onReady"]);
   };
 
   const playVideo = () => postToPlayer("playVideo");
@@ -265,6 +277,66 @@ export function App() {
     seekTo(targetTime);
   };
 
+  useEffect(() => {
+    const onMessage = (event: MessageEvent) => {
+      if (typeof event.data !== "string" || !event.origin.includes("youtube.com")) return;
+
+      try {
+        const message = JSON.parse(event.data) as {
+          event?: string;
+          info?: {
+            currentTime?: number;
+            duration?: number;
+            playerState?: number;
+          };
+        };
+
+        if (message.event !== "infoDelivery" || !message.info) return;
+
+        const { currentTime, duration, playerState } = message.info;
+        if (typeof duration === "number" && duration > 0) {
+          durationRef.current = duration;
+        }
+
+        if (typeof currentTime === "number" && Number.isFinite(currentTime)) {
+          currentTimeRef.current = currentTime;
+          lastTargetTimeRef.current = currentTime;
+          setSeekPercent(clamp(currentTime / durationRef.current, 0, 1));
+        }
+
+        if (playerState === 1) {
+          setIsPlaying(true);
+          lastClockTimeRef.current = performance.now();
+        } else if (playerState === 0 || playerState === 2) {
+          setIsPlaying(false);
+        }
+      } catch {
+        // YouTube sends a few non-JSON messages in some browsers; ignore them.
+      }
+    };
+
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, []);
+
+  useEffect(() => {
+    if (!isPlaying) return;
+
+    lastClockTimeRef.current = performance.now();
+    const timer = window.setInterval(() => {
+      const now = performance.now();
+      const elapsedSeconds = ((now - lastClockTimeRef.current) / 1000) * speed;
+      lastClockTimeRef.current = now;
+
+      const nextTime = Math.max(0, currentTimeRef.current + elapsedSeconds);
+      currentTimeRef.current = nextTime;
+      lastTargetTimeRef.current = nextTime;
+      setSeekPercent(clamp(nextTime / durationRef.current, 0, 1));
+    }, 250);
+
+    return () => window.clearInterval(timer);
+  }, [isPlaying, speed]);
+
   const loadVideo = () => {
     const nextId = extractVideoId(url);
     console.log("extracted videoId", nextId);
@@ -279,6 +351,9 @@ export function App() {
     setErrorMessage("");
     setIsPlaying(false);
     setSeekPercent(0);
+    currentTimeRef.current = 0;
+    lastTargetTimeRef.current = 0;
+    durationRef.current = APPROX_DURATION_SECONDS;
     window.setTimeout(disableCaptions, 500);
   };
 
@@ -588,6 +663,7 @@ export function App() {
                 onLoad={() => {
                   setLoading(false);
                   setErrorMessage("");
+                  requestPlayerUpdates();
                   applyPlaybackPreferences();
                   window.setTimeout(disableCaptions, 800);
                   console.log("iframe loaded", embedUrl);
