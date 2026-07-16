@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { FlipHorizontal2, Gauge, Pause, Play, ScanSearch, SkipBack, SkipForward } from "lucide-react";
+import { FlipHorizontal2, Gauge, Pause, Play, ScanSearch } from "lucide-react";
 
 const STORAGE_KEY = "d-player-state";
 const SPEEDS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2];
@@ -8,6 +8,7 @@ const PREFERRED_QUALITY = "hd1080";
 const EXPERIMENTAL_QUALITY = "highres";
 const APPROX_DURATION_SECONDS = 180;
 const MAX_SCALE = 5;
+const JUMP_SECONDS = [1, 3, 5, 10];
 
 type SavedState = {
   url: string;
@@ -31,6 +32,14 @@ type TouchSnapshot = {
   translateX?: number;
   translateY?: number;
   pinching: boolean;
+};
+
+type PointerSnapshot = {
+  x: number;
+  y: number;
+  translateX: number;
+  translateY: number;
+  moved: boolean;
 };
 
 const defaultState: SavedState = {
@@ -120,10 +129,12 @@ export function App() {
   const [dragDelta, setDragDelta] = useState<number | null>(null);
   const [seekToast, setSeekToast] = useState("");
   const [uiVisible, setUiVisible] = useState(true);
+  const [isDesktop, setIsDesktop] = useState(false);
 
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const videoStageRef = useRef<HTMLDivElement | null>(null);
   const touchRef = useRef<TouchSnapshot | null>(null);
+  const pointerRef = useRef<PointerSnapshot | null>(null);
   const currentTimeRef = useRef(0);
   const lastTargetTimeRef = useRef(0);
   const seekFrameRef = useRef<number | null>(null);
@@ -148,6 +159,14 @@ export function App() {
     if (nextTranslate.x !== translateX) setTranslateX(nextTranslate.x);
     if (nextTranslate.y !== translateY) setTranslateY(nextTranslate.y);
   }, [scale]);
+
+  useEffect(() => {
+    const media = window.matchMedia("(pointer: fine)");
+    const update = () => setIsDesktop(media.matches);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
 
   useEffect(() => {
     const preventGesture = (event: Event) => event.preventDefault();
@@ -327,6 +346,13 @@ export function App() {
     };
   };
 
+  const panVideo = (x: number, y: number) => {
+    if (scale <= 1) return;
+    const nextTranslate = clampTranslate(x, y, scale);
+    setTranslateX(nextTranslate.x);
+    setTranslateY(nextTranslate.y);
+  };
+
   const resetZoom = () => {
     setScale(1);
     setTranslateX(0);
@@ -362,6 +388,8 @@ export function App() {
       y: touch.clientY,
       startTime: currentTimeRef.current,
       moved: false,
+      translateX,
+      translateY,
       pinching: false
     };
   };
@@ -392,31 +420,17 @@ export function App() {
     if (event.touches.length !== 1 || start.pinching) return;
 
     const touch = event.touches[0];
-    const rect = event.currentTarget.getBoundingClientRect();
-    const ratioY = clamp((start.y - rect.top) / rect.height, 0, 1);
-    const sensitivity = ratioY < 1 / 3 ? 0.2 : ratioY < 2 / 3 ? 0.05 : 0.01;
     const deltaX = touch.clientX - start.x;
-    if (Math.abs(deltaX) > 4) {
+    const deltaY = touch.clientY - start.y;
+    if (scale > 1 && Math.hypot(deltaX, deltaY) > 3) {
       touchRef.current = { ...start, moved: true };
-      const delta = deltaX * sensitivity;
-      const targetTime = Math.max(0, start.startTime + delta);
-      lastTargetTimeRef.current = targetTime;
-      setDragDelta(delta);
-      setSeekPercent(clamp(targetTime / APPROX_DURATION_SECONDS, 0, 1));
-      seekImmediately(targetTime);
+      panVideo((start.translateX ?? translateX) + deltaX, (start.translateY ?? translateY) + deltaY);
     }
   };
 
   const onStageTouchEnd = (event?: React.TouchEvent<HTMLDivElement>) => {
     const snapshot = touchRef.current;
-    if (snapshot && !snapshot.pinching && dragDelta !== null) {
-      cancelPendingSeek();
-      const targetTime = lastTargetTimeRef.current;
-      currentTimeRef.current = targetTime;
-      setSeekPercent(clamp(targetTime / APPROX_DURATION_SECONDS, 0, 1));
-      seekTo(targetTime);
-      showSeekToast(dragDelta, targetTime);
-    } else if (snapshot && !snapshot.pinching && !snapshot.moved && event?.changedTouches[0]) {
+    if (snapshot && !snapshot.pinching && !snapshot.moved && event?.changedTouches[0]) {
       const touch = event.changedTouches[0];
       const now = Date.now();
       const previous = lastTapRef.current;
@@ -436,6 +450,100 @@ export function App() {
     touchRef.current = null;
     setDragDelta(null);
   };
+
+  const onStagePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.pointerType !== "mouse") return;
+    event.preventDefault();
+    pointerRef.current = {
+      x: event.clientX,
+      y: event.clientY,
+      translateX,
+      translateY,
+      moved: false
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const onStagePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    const start = pointerRef.current;
+    if (!start || event.pointerType !== "mouse") return;
+    event.preventDefault();
+    const deltaX = event.clientX - start.x;
+    const deltaY = event.clientY - start.y;
+    if (Math.hypot(deltaX, deltaY) > 2) {
+      start.moved = true;
+      if (scale > 1) {
+        panVideo(start.translateX + deltaX, start.translateY + deltaY);
+      }
+    }
+  };
+
+  const onStagePointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.pointerType !== "mouse") return;
+    if (pointerRef.current && !pointerRef.current.moved) {
+      setUiVisible((value) => !value);
+    }
+    pointerRef.current = null;
+  };
+
+  const onStageWheel = (event: React.WheelEvent<HTMLDivElement>) => {
+    if (!isDesktop || !videoId) return;
+    event.preventDefault();
+    const nextScale = clamp(scale + (event.deltaY < 0 ? 0.18 : -0.18), 1, MAX_SCALE);
+    const nextTranslate = clampTranslate(translateX, translateY, nextScale);
+    setScale(nextScale);
+    setTranslateX(nextTranslate.x);
+    setTranslateY(nextTranslate.y);
+  };
+
+  useEffect(() => {
+    if (!isDesktop) return;
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.tagName === "INPUT" || target?.tagName === "TEXTAREA" || target?.isContentEditable) return;
+
+      if (event.code === "Space") {
+        event.preventDefault();
+        togglePlay();
+        return;
+      }
+
+      const forward = event.shiftKey;
+      const jumpMap: Record<string, number> = {
+        Digit1: 1,
+        Digit3: 3,
+        Digit5: 5,
+        Digit0: 10
+      };
+
+      if (event.code in jumpMap) {
+        event.preventDefault();
+        jumpBy((forward ? 1 : -1) * jumpMap[event.code]);
+        return;
+      }
+
+      if (event.key === "m" || event.key === "M") {
+        event.preventDefault();
+        setMirrored((value) => !value);
+        return;
+      }
+
+      if (event.key === "z" || event.key === "Z") {
+        event.preventDefault();
+        resetZoom();
+        return;
+      }
+
+      if (event.key === "u" || event.key === "U") {
+        event.preventDefault();
+        setUiVisible((value) => !value);
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  });
 
   return (
     <main className={`app-shell ${uiVisible ? "" : "ui-hidden"}`}>
@@ -462,7 +570,7 @@ export function App() {
       </header>
 
       <section className="player-zone" aria-label="YouTube プレーヤー">
-        <div className="video-stage" ref={videoStageRef} onDoubleClick={resetZoom}>
+        <div className="video-stage" ref={videoStageRef} onDoubleClick={resetZoom} onWheel={onStageWheel}>
           <div
             className="videoTransformLayer"
             style={{
@@ -497,13 +605,7 @@ export function App() {
 
           {loading && <p className="status-message">動画を読み込んでいます...</p>}
           {errorMessage && <p className="notice">{errorMessage}</p>}
-          {(dragDelta !== null || seekToast) && (
-            <p className="drag-delta">
-              {dragDelta !== null
-                ? `${dragDelta >= 0 ? "+" : ""}${dragDelta.toFixed(1)}s -> ${formatClock(Math.max(0, (touchRef.current?.startTime ?? currentTimeRef.current) + dragDelta))}`
-                : seekToast}
-            </p>
-          )}
+          {seekToast && <p className="drag-delta">{seekToast}</p>}
           {videoId && (
             <div
               className="gesture-layer is-enabled"
@@ -512,10 +614,45 @@ export function App() {
               onTouchMove={onStageTouchMove}
               onTouchEnd={onStageTouchEnd}
               onTouchCancel={onStageTouchEnd}
+              onPointerDown={onStagePointerDown}
+              onPointerMove={onStagePointerMove}
+              onPointerUp={onStagePointerUp}
+              onPointerCancel={onStagePointerUp}
             />
           )}
         </div>
       </section>
+
+      <div className="jump-strip" aria-label="秒ジャンプ" onClick={(event) => event.stopPropagation()} onTouchStart={(event) => event.stopPropagation()}>
+        {[...JUMP_SECONDS].reverse().map((seconds) => (
+          <button
+            type="button"
+            key={`back-${seconds}`}
+            onClick={(event) => {
+              event.stopPropagation();
+              jumpBy(-seconds);
+            }}
+            disabled={!videoId}
+            title={isDesktop ? `${seconds === 10 ? "0" : seconds}: ${seconds}秒戻る` : undefined}
+          >
+            -{seconds}
+          </button>
+        ))}
+        {JUMP_SECONDS.map((seconds) => (
+          <button
+            type="button"
+            key={`forward-${seconds}`}
+            onClick={(event) => {
+              event.stopPropagation();
+              jumpBy(seconds);
+            }}
+            disabled={!videoId}
+            title={isDesktop ? `Shift+${seconds === 10 ? "0" : seconds}: ${seconds}秒進む` : undefined}
+          >
+            +{seconds}
+          </button>
+        ))}
+      </div>
 
       <div className="seek-strip" aria-label="シークバー" onClick={(event) => event.stopPropagation()} onTouchStart={(event) => event.stopPropagation()}>
         <button
@@ -537,19 +674,6 @@ export function App() {
 
       <footer className="bottom-bar" aria-label="操作バー" onClick={(event) => event.stopPropagation()} onTouchStart={(event) => event.stopPropagation()}>
         <button
-          className="icon-button"
-          type="button"
-          onClick={(event) => {
-            event.stopPropagation();
-            jumpBy(-5);
-          }}
-          disabled={!videoId}
-          aria-label="5秒戻る"
-        >
-          <SkipBack />
-          <span>-5</span>
-        </button>
-        <button
           className="play-button"
           type="button"
           onClick={(event) => {
@@ -560,19 +684,6 @@ export function App() {
           aria-label="再生停止"
         >
           {isPlaying ? <Pause /> : <Play />}
-        </button>
-        <button
-          className="icon-button"
-          type="button"
-          onClick={(event) => {
-            event.stopPropagation();
-            jumpBy(5);
-          }}
-          disabled={!videoId}
-          aria-label="5秒進む"
-        >
-          <SkipForward />
-          <span>+5</span>
         </button>
         <button
           className={`icon-button ${mirrored ? "is-active" : ""}`}

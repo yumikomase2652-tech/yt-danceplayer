@@ -64,6 +64,7 @@ button {
 }
 
 .ui-hidden .top-bar,
+.ui-hidden .jump-strip,
 .ui-hidden .seek-strip,
 .ui-hidden .bottom-bar {
   height: 0;
@@ -236,6 +237,30 @@ button {
   touch-action: manipulation;
 }
 
+.jump-strip {
+  display: grid;
+  flex-shrink: 0;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  gap: 4px;
+  padding: 5px 8px 2px;
+  background: rgba(8, 10, 9, 0.98);
+  touch-action: manipulation;
+}
+
+.jump-strip button {
+  height: 34px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.11);
+  font-size: 0.76rem;
+  font-weight: 900;
+  touch-action: manipulation;
+}
+
+.jump-strip button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .seek-track {
   position: relative;
   display: block;
@@ -270,7 +295,7 @@ button {
   z-index: 8;
   display: grid;
   flex-shrink: 0;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 6px;
   padding: 8px 8px max(10px, env(safe-area-inset-bottom));
   background: rgba(8, 10, 9, 0.98);
@@ -399,5 +424,16 @@ button {
 
   .icon-button span {
     font-size: 0.58rem;
+  }
+
+  .jump-strip {
+    gap: 3px;
+    padding-right: 6px;
+    padding-left: 6px;
+  }
+
+  .jump-strip button {
+    height: 32px;
+    font-size: 0.68rem;
   }
 }
