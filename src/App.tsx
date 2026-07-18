@@ -4,11 +4,12 @@ import { FlipHorizontal2, Gauge, Pause, Play, ScanSearch } from "lucide-react";
 const STORAGE_KEY = "d-player-state";
 const SPEEDS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2];
 const SHOW_YOUTUBE_CONTROLS = false;
-const PREFERRED_QUALITY = "hd1080";
-const EXPERIMENTAL_QUALITY = "highres";
+const EMBED_QUALITY = "highres";
+const QUALITY_SEQUENCE = ["hd720", "hd1080", "hd1440", "hd2160", "highres"];
 const APPROX_DURATION_SECONDS = 180;
 const MAX_SCALE = 5;
 const JUMP_SECONDS = [1, 3, 5, 10];
+const VIDEO_ID_PATTERN = /^[a-zA-Z0-9_-]{11}$/;
 
 type SavedState = {
   url: string;
@@ -42,6 +43,10 @@ type PointerSnapshot = {
   moved: boolean;
 };
 
+type WebKitGestureEvent = Event & {
+  scale?: number;
+};
+
 const defaultState: SavedState = {
   url: "",
   videoId: "",
@@ -56,26 +61,31 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
 }
 
+function isVideoId(value: string) {
+  return VIDEO_ID_PATTERN.test(value);
+}
+
 function extractVideoId(value: string) {
   const input = value.trim();
   if (!input) return "";
-  if (/^[a-zA-Z0-9_-]{11}$/.test(input)) return input;
+  if (isVideoId(input)) return input;
 
   try {
     const url = new URL(input);
-    if (url.hostname.includes("youtu.be")) {
+    const hostname = url.hostname.replace(/^www\./, "");
+    if (hostname === "youtu.be") {
       const id = url.pathname.split("/").filter(Boolean)[0] ?? "";
-      return /^[a-zA-Z0-9_-]{11}$/.test(id) ? id : "";
+      return isVideoId(id) ? id : "";
     }
 
-    if (url.hostname.includes("youtube.com")) {
+    if (hostname.endsWith("youtube.com") || hostname === "youtube-nocookie.com") {
       const watchId = url.searchParams.get("v");
-      if (watchId && /^[a-zA-Z0-9_-]{11}$/.test(watchId)) return watchId;
+      if (watchId && isVideoId(watchId)) return watchId;
 
       const parts = url.pathname.split("/").filter(Boolean);
-      const videoIndex = parts.findIndex((part) => part === "embed" || part === "shorts");
+      const videoIndex = parts.findIndex((part) => ["embed", "shorts", "live", "v"].includes(part));
       const id = videoIndex >= 0 ? (parts[videoIndex + 1] ?? "") : "";
-      return /^[a-zA-Z0-9_-]{11}$/.test(id) ? id : "";
+      return isVideoId(id) ? id : "";
     }
   } catch {
     return "";
@@ -105,7 +115,7 @@ function buildEmbedUrl(videoId: string) {
     cc_load_policy: "0",
     fs: "0",
     disablekb: "1",
-    vq: PREFERRED_QUALITY,
+    vq: EMBED_QUALITY,
     origin: window.location.origin
   });
 
@@ -143,6 +153,7 @@ export function App() {
   const seekTimeoutRef = useRef<number | null>(null);
   const seekToastTimerRef = useRef<number | null>(null);
   const lastTapRef = useRef<{ time: number; x: number; y: number } | null>(null);
+  const desktopGestureRef = useRef({ scale: 1, translateX: 0, translateY: 0 });
 
   const embedUrl = videoId ? buildEmbedUrl(videoId) : "";
 
@@ -182,6 +193,44 @@ export function App() {
       document.removeEventListener("gestureend", preventGesture);
     };
   }, []);
+
+  useEffect(() => {
+    const stage = videoStageRef.current;
+    if (!stage || !isDesktop || !videoId) return;
+
+    const onGestureStart = (event: WebKitGestureEvent) => {
+      event.preventDefault();
+      desktopGestureRef.current = { scale, translateX, translateY };
+    };
+
+    const onGestureChange = (event: WebKitGestureEvent) => {
+      event.preventDefault();
+      const gestureScale = typeof event.scale === "number" ? event.scale : 1;
+      const nextScale = clamp(desktopGestureRef.current.scale * gestureScale, 1, MAX_SCALE);
+      const nextTranslate = clampTranslate(
+        desktopGestureRef.current.translateX,
+        desktopGestureRef.current.translateY,
+        nextScale
+      );
+      setScale(nextScale);
+      setTranslateX(nextTranslate.x);
+      setTranslateY(nextTranslate.y);
+    };
+
+    const onGestureEnd = (event: WebKitGestureEvent) => {
+      event.preventDefault();
+    };
+
+    stage.addEventListener("gesturestart", onGestureStart, { passive: false });
+    stage.addEventListener("gesturechange", onGestureChange, { passive: false });
+    stage.addEventListener("gestureend", onGestureEnd, { passive: false });
+
+    return () => {
+      stage.removeEventListener("gesturestart", onGestureStart);
+      stage.removeEventListener("gesturechange", onGestureChange);
+      stage.removeEventListener("gestureend", onGestureEnd);
+    };
+  }, [isDesktop, videoId, scale, translateX, translateY]);
 
   useEffect(() => {
     if (!loading) return;
@@ -239,13 +288,14 @@ export function App() {
   const applyPlaybackPreferences = () => {
     setPlaybackRate(speed);
     disableCaptions();
-    // postMessageの画質指定はYouTube側で無視される場合があります。iframe src の vq も併用します。
-    setPlaybackQuality(EXPERIMENTAL_QUALITY);
-    setPlaybackQualityRange(EXPERIMENTAL_QUALITY);
-    window.setTimeout(() => {
-      setPlaybackQuality(PREFERRED_QUALITY);
-      setPlaybackQualityRange(PREFERRED_QUALITY);
-    }, 300);
+    // postMessageの画質指定はYouTube側で無視される場合があります。iframe src の vq も併用し、最高画質候補を低い順に送り最後に highres を残します。
+    QUALITY_SEQUENCE.forEach((quality, index) => {
+      window.setTimeout(() => {
+        setPlaybackQuality(quality);
+        setPlaybackQualityRange(quality);
+        console.log("requested playback quality", quality);
+      }, index * 220);
+    });
   };
 
   const formatClock = (seconds: number) => {
@@ -372,7 +422,7 @@ export function App() {
 
   const jumpBy = (seconds: number) => {
     const nextTime = Math.max(0, currentTimeRef.current + seconds);
-    const nextPercent = clamp(nextTime / APPROX_DURATION_SECONDS, 0, 1);
+    const nextPercent = clamp(nextTime / durationRef.current, 0, 1);
     currentTimeRef.current = nextTime;
     lastTargetTimeRef.current = nextTime;
     setSeekPercent(nextPercent);
@@ -388,7 +438,7 @@ export function App() {
 
   const handleSeek = (clientX: number, rect: DOMRect) => {
     const nextPercent = clamp((clientX - rect.left) / rect.width, 0, 1);
-    const nextTime = nextPercent * APPROX_DURATION_SECONDS;
+    const nextTime = nextPercent * durationRef.current;
     currentTimeRef.current = nextTime;
     lastTargetTimeRef.current = nextTime;
     setSeekPercent(nextPercent);
@@ -564,11 +614,23 @@ export function App() {
   const onStageWheel = (event: React.WheelEvent<HTMLDivElement>) => {
     if (!isDesktop || !videoId) return;
     event.preventDefault();
-    const nextScale = clamp(scale + (event.deltaY < 0 ? 0.18 : -0.18), 1, MAX_SCALE);
-    const nextTranslate = clampTranslate(translateX, translateY, nextScale);
-    setScale(nextScale);
-    setTranslateX(nextTranslate.x);
-    setTranslateY(nextTranslate.y);
+    const deltaUnit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? 80 : 1;
+    const deltaX = event.deltaX * deltaUnit;
+    const deltaY = event.deltaY * deltaUnit;
+
+    if (event.ctrlKey || event.metaKey) {
+      const zoomFactor = Math.exp(-deltaY * 0.01);
+      const nextScale = clamp(scale * zoomFactor, 1, MAX_SCALE);
+      const nextTranslate = clampTranslate(translateX, translateY, nextScale);
+      setScale(nextScale);
+      setTranslateX(nextTranslate.x);
+      setTranslateY(nextTranslate.y);
+      return;
+    }
+
+    if (scale > 1) {
+      panVideo(translateX - deltaX, translateY - deltaY);
+    }
   };
 
   useEffect(() => {
